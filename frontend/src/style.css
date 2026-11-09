@@ -275,3 +275,19 @@ header{background:#111113;border-bottom-color:#2b2b30}
 .header-live-link{display:inline-flex;align-items:center;gap:6px;padding:7px 10px;border:1px solid #514265;border-radius:5px;background:#211a2b;color:#d8c4ff;font-size:12px;font-weight:600}
 .header-live-link:hover,.service-live-url>button:hover{background:#30233f}
 @media(max-width:760px){.header-live-link{font-size:0;padding:8px}.header-live-link svg{width:15px;height:15px}}
+
+
+/* Scrollable Render-style service workspace */
+html,body,#root{min-height:100%;height:auto}
+body{overflow-x:hidden;overflow-y:auto}
+.shell{min-height:100vh;height:auto;overflow:visible}
+.sidebar{height:100vh;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#414149 transparent}
+.sidebar::-webkit-scrollbar{width:6px}
+.sidebar::-webkit-scrollbar-thumb{background:#414149;border-radius:8px}
+.sidebar::-webkit-scrollbar-track{background:transparent}
+.sidebar nav{flex:0 0 auto}
+.sidebar .side-bottom{flex:0 0 auto;margin-top:24px}
+main{min-height:100vh;height:auto;overflow:visible}
+.content{min-height:calc(100vh - 66px);height:auto;overflow:visible}
+.service-identity,.service-source,.service-live-url,.service-url-pending,.service-deploy{flex-shrink:0}
+@media(max-width:760px){.sidebar{height:100dvh;max-height:100dvh}.shell,main,.content{height:auto;min-height:100vh;overflow:visible}}
