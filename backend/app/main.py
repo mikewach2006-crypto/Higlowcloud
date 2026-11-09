@@ -139,8 +139,10 @@ def migrate_legacy_schema():
 migrate_legacy_schema()
 
 app=FastAPI(title="HiglowCloud API",version="1.0.0")
-origins=[x.strip() for x in os.getenv("FRONTEND_ORIGIN","http://localhost:5173").split(",") if x.strip()]
-app.add_middleware(CORSMiddleware,allow_origins=origins,allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
+# Keep the deployed dashboard origins trusted even if Render has an outdated hostname.
+origins={"https://higlowcloud.onrender.com","https://higlowcloud-web.onrender.com","http://localhost:5173"}
+origins.update(x.strip() for x in os.getenv("FRONTEND_ORIGIN","").split(",") if x.strip())
+app.add_middleware(CORSMiddleware,allow_origins=sorted(origins),allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
 secret=os.getenv("SECRET_KEY","")
 if os.getenv("APP_ENV")=="production" and len(secret)<32: raise RuntimeError("Set SECRET_KEY to 32+ random characters.")
 if not secret: secret=secrets.token_urlsafe(48)
@@ -196,6 +198,10 @@ class ProjectIn(BaseModel):
 class EnvIn(BaseModel):key:str=Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,179}$");value:str=Field(max_length=10000);secret:bool=True
 class DomainIn(BaseModel):hostname:str
 class DbIn(BaseModel):name:str=Field(min_length=1,max_length=120);engine:str="postgres"
+
+@app.get("/")
+def root():
+ return {"service":"HiglowCloud API","status":"ok","health":"/health","api":"/api/v1"}
 
 @app.get("/health")
 def health(db:Session=Depends(get_db)):
