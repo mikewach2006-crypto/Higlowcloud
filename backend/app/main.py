@@ -1,9 +1,10 @@
 from __future__ import annotations
-import base64,hashlib,hmac,json,os,re,secrets,uuid,zipfile,io
+import base64,hashlib,hmac,json,os,re,secrets,uuid,zipfile,io,time,urllib.request,urllib.error,urllib.parse
 from datetime import datetime,timedelta,timezone
 from pathlib import Path,PurePosixPath
 from typing import Optional
 from fastapi import FastAPI,Depends,HTTPException,UploadFile,File,Request
+from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer,HTTPAuthorizationCredentials
 from pydantic import BaseModel,Field
@@ -11,6 +12,8 @@ from sqlalchemy import String,DateTime,ForeignKey,Text,Boolean,Float,select,desc
 from sqlalchemy.orm import Mapped,mapped_column,Session
 from .database import Base,engine,get_db
 from cryptography.fernet import Fernet,InvalidToken
+from cryptography.hazmat.primitives import hashes,serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 
 UTC=timezone.utc
 def now(): return datetime.now(UTC)
@@ -105,6 +108,26 @@ class Audit(Base):
  target:Mapped[str]=mapped_column(String(180),default="")
  created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=now)
 
+
+class GitHubInstallation(Base):
+ __tablename__="github_installations"
+ id:Mapped[int]=mapped_column(primary_key=True)
+ org_id:Mapped[int]=mapped_column(ForeignKey("organizations.id",ondelete="CASCADE"),unique=True,index=True)
+ installation_id:Mapped[int]=mapped_column(unique=True,index=True)
+ account_login:Mapped[str]=mapped_column(String(255))
+ account_type:Mapped[str]=mapped_column(String(40),default="User")
+ created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=now)
+class GitHubConnectState(Base):
+ __tablename__="github_connect_states"
+ state_hash:Mapped[str]=mapped_column(String(64),primary_key=True)
+ user_id:Mapped[int]=mapped_column(ForeignKey("users.id",ondelete="CASCADE"))
+ org_id:Mapped[int]=mapped_column(ForeignKey("organizations.id",ondelete="CASCADE"))
+ expires_at:Mapped[datetime]=mapped_column(DateTime(timezone=True))
+class GitHubDelivery(Base):
+ __tablename__="github_deliveries"
+ delivery_id:Mapped[str]=mapped_column(String(100),primary_key=True)
+ received_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=now)
+
 Base.metadata.create_all(bind=engine)
 
 # Upgrade the original unauthenticated MVP tables in place without dropping customer data.
@@ -112,7 +135,7 @@ def migrate_legacy_schema():
  additions={
   "projects":{
    "org_id":"INTEGER REFERENCES organizations(id)","slug":"VARCHAR(120)","framework":"VARCHAR(60)",
-   "source_url":"VARCHAR(1000)","updated_at":"TIMESTAMP"
+   "source_url":"VARCHAR(1000)","source_ref":"VARCHAR(255)","updated_at":"TIMESTAMP"
   },
   "deployments":{
    "uid":"VARCHAR(36)","org_id":"INTEGER REFERENCES organizations(id)","source_type":"VARCHAR(30)",
@@ -242,6 +265,143 @@ def login(x:Login,db:Session=Depends(get_db)):
 @app.get("/api/v1/auth/me")
 def me(ctx=Depends(current)):
  u=ctx["user"];return {"id":u.id,"email":u.email,"name":u.name,"is_platform_admin":u.admin,"role":ctx["role"],"organization_id":ctx["org"]}
+
+# GitHub App integration. Installation credentials are exchanged on demand and never stored.
+def github_app_config():
+ app_id=os.getenv("GITHUB_APP_ID","").strip()
+ private_key=os.getenv("GITHUB_APP_PRIVATE_KEY","").replace("\\n","\\n").strip()
+ app_slug=os.getenv("GITHUB_APP_SLUG","higlowcloud").strip()
+ if not app_id or not private_key:raise HTTPException(503,"GitHub App is not configured on the API service.")
+ return app_id,private_key,app_slug
+def github_app_jwt():
+ app_id,key,_=github_app_config()
+ try:
+  private=serialization.load_pem_private_key(key.encode(),password=None)
+  header=b64(json.dumps({"alg":"RS256","typ":"JWT"}).encode())
+  payload=b64(json.dumps({"iat":int(time.time())-60,"exp":int(time.time())+540,"iss":app_id}).encode())
+  body=header+"."+payload
+  signature=private.sign(body.encode(),padding.PKCS1v15(),hashes.SHA256())
+  return body+"."+b64(signature)
+ except Exception:raise HTTPException(503,"GitHub App private key is invalid. Check GITHUB_APP_PRIVATE_KEY.")
+def github_api(path,token=None,method="GET",body=None):
+ headers={"Accept":"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28","User-Agent":"HiglowCloud"}
+ headers["Authorization"]="Bearer "+(token or github_app_jwt())
+ data=json.dumps(body or {}).encode() if body is not None else None
+ if data is not None:headers["Content-Type"]="application/json"
+ req=urllib.request.Request("https://api.github.com"+path,data=data,headers=headers,method=method)
+ try:
+  with urllib.request.urlopen(req,timeout=20) as response:return json.loads(response.read().decode() or "{}")
+ except urllib.error.HTTPError as exc:
+  detail=exc.read().decode(errors="replace")[:500]
+  raise HTTPException(502,"GitHub API request failed ("+str(exc.code)+"): "+detail)
+ except Exception:raise HTTPException(502,"Could not reach GitHub. Try again.")
+def github_installation_token(installation_id):
+ result=github_api("/app/installations/"+str(installation_id)+"/access_tokens",method="POST",body={})
+ token=result.get("token")
+ if not token:raise HTTPException(502,"GitHub did not issue an installation access token.")
+ return token
+def github_frontend_url():
+ return os.getenv("FRONTEND_ORIGIN","https://higlowcloud.onrender.com").split(",")[0].strip().rstrip("/")
+@app.post("/api/v1/integrations/github/connect")
+def github_connect(ctx=Depends(current),db:Session=Depends(get_db)):
+ _,_,app_slug=github_app_config()
+ state=secrets.token_urlsafe(32)
+ db.add(GitHubConnectState(state_hash=hashlib.sha256(state.encode()).hexdigest(),user_id=ctx["user"].id,org_id=ctx["org"],expires_at=now()+timedelta(minutes=10)))
+ db.commit()
+ return {"url":"https://github.com/apps/"+urllib.parse.quote(app_slug,safe="")+"/installations/new?state="+urllib.parse.quote(state,safe=""),"expires_in":600}
+@app.get("/api/v1/integrations/github/callback")
+def github_callback(installation_id:int, state:str, setup_action:str="install", db:Session=Depends(get_db)):
+ if setup_action not in {"install","update"}:raise HTTPException(400,"GitHub App installation was not completed.")
+ state_hash=hashlib.sha256(state.encode()).hexdigest()
+ saved=db.get(GitHubConnectState,state_hash)
+ if not saved or saved.expires_at.replace(tzinfo=UTC) < now():raise HTTPException(400,"GitHub connection link expired. Return to HiglowCloud and connect again.")
+ installation=github_api("/app/installations/"+str(installation_id))
+ account=installation.get("account") or {}
+ login=account.get("login")
+ if not login:raise HTTPException(502,"GitHub did not return the installation account.")
+ existing=db.scalar(select(GitHubInstallation).where(GitHubInstallation.org_id==saved.org_id))
+ if existing:
+  existing.installation_id=installation_id;existing.account_login=login;existing.account_type=account.get("type","User")
+ else:db.add(GitHubInstallation(org_id=saved.org_id,installation_id=installation_id,account_login=login,account_type=account.get("type","User")))
+ db.delete(saved);db.commit()
+ return RedirectResponse(github_frontend_url()+"/?github=connected",status_code=303)
+@app.get("/api/v1/integrations/github/status")
+def github_status(ctx=Depends(current),db:Session=Depends(get_db)):
+ item=db.scalar(select(GitHubInstallation).where(GitHubInstallation.org_id==ctx["org"]))
+ return {"connected":bool(item),"account":item.account_login if item else None,"account_type":item.account_type if item else None}
+@app.get("/api/v1/integrations/github/repositories")
+def github_repositories(ctx=Depends(current),db:Session=Depends(get_db)):
+ item=db.scalar(select(GitHubInstallation).where(GitHubInstallation.org_id==ctx["org"]))
+ if not item:raise HTTPException(409,"Connect your GitHub account first.")
+ token=github_installation_token(item.installation_id);out=[]
+ for page in range(1,11):
+  result=github_api("/installation/repositories?per_page=100&page="+str(page),token=token)
+  repos=result.get("repositories",[]);out.extend(repos)
+  if len(repos)<100:break
+ return [{"id":r["id"],"full_name":r["full_name"],"name":r["name"],"private":r["private"],"default_branch":r.get("default_branch") or "main","description":r.get("description"),"html_url":r["html_url"],"owner":r["owner"]["login"]} for r in out]
+@app.get("/api/v1/integrations/github/repositories/{owner}/{repo}/branches")
+def github_branches(owner:str,repo:str,ctx=Depends(current),db:Session=Depends(get_db)):
+ if not re.fullmatch(r"[A-Za-z0-9_.-]+",owner) or not re.fullmatch(r"[A-Za-z0-9_.-]+",repo):raise HTTPException(422,"Invalid repository.")
+ item=db.scalar(select(GitHubInstallation).where(GitHubInstallation.org_id==ctx["org"]))
+ if not item:raise HTTPException(409,"Connect your GitHub account first.")
+ token=github_installation_token(item.installation_id)
+ data=github_api("/repos/"+urllib.parse.quote(owner,safe="")+"/"+urllib.parse.quote(repo,safe="")+"/branches?per_page=100",token=token)
+ return [{"name":b["name"]} for b in data]
+class GitHubProjectIn(BaseModel):
+ name:str=Field(min_length=1,max_length=120)
+ repository_full_name:str
+ branch:str=Field(min_length=1,max_length=255)
+ framework:str="auto"
+@app.post("/api/v1/integrations/github/projects",status_code=201)
+def github_import_project(x:GitHubProjectIn,ctx=Depends(current),db:Session=Depends(get_db)):
+ if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+",x.repository_full_name):raise HTTPException(422,"Invalid repository name.")
+ item=db.scalar(select(GitHubInstallation).where(GitHubInstallation.org_id==ctx["org"]))
+ if not item:raise HTTPException(409,"Connect your GitHub account first.")
+ token=github_installation_token(item.installation_id)
+ owner,repo=x.repository_full_name.split("/",1)
+ info=github_api("/repos/"+urllib.parse.quote(owner,safe="")+"/"+urllib.parse.quote(repo,safe=""),token=token)
+ if info.get("full_name","").lower()!=x.repository_full_name.lower():raise HTTPException(404,"Repository is not available to this GitHub installation.")
+ branch=x.branch.strip()
+ branches=github_api("/repos/"+urllib.parse.quote(owner,safe="")+"/"+urllib.parse.quote(repo,safe="")+"/branches/"+urllib.parse.quote(branch,safe=""),token=token)
+ if not branches.get("name"):raise HTTPException(404,"Selected branch was not found.")
+ name=x.name.strip();s=slug(name)
+ if db.scalar(select(Project).where(Project.org_id==ctx["org"],Project.slug==s)):s+="-"+secrets.token_hex(2)
+ url="https://github.com/"+info["full_name"]
+ p=Project(org_id=ctx["org"],name=name,slug=s,framework=x.framework[:60],source_type="github",source_url=url,source_ref=branch)
+ db.add(p);db.flush();log(db,ctx,"project.github_imported",info["full_name"]+"@"+branch);db.commit();db.refresh(p)
+ return {"id":p.id,"name":p.name,"slug":p.slug,"framework":p.framework,"source_type":p.source_type,"source_url":p.source_url,"source_ref":p.source_ref,"created_at":p.created_at,"deployments":0}
+@app.post("/api/v1/webhooks/github")
+async def github_webhook(request:Request,db:Session=Depends(get_db)):
+ secret_value=os.getenv("GITHUB_WEBHOOK_SECRET","")
+ if not secret_value:raise HTTPException(503,"GitHub webhook secret is not configured.")
+ body=await request.body()
+ signature=request.headers.get("X-Hub-Signature-256","")
+ expected="sha256="+hmac.new(secret_value.encode(),body,hashlib.sha256).hexdigest()
+ if not hmac.compare_digest(signature,expected):raise HTTPException(401,"Invalid webhook signature.")
+ delivery=request.headers.get("X-GitHub-Delivery","")
+ event=request.headers.get("X-GitHub-Event","")
+ if not delivery:raise HTTPException(400,"Missing GitHub delivery identifier.")
+ if db.get(GitHubDelivery,delivery):return {"ok":True,"duplicate":True}
+ try:payload=json.loads(body or b"{}")
+ except Exception:raise HTTPException(400,"Invalid webhook JSON.")
+ db.add(GitHubDelivery(delivery_id=delivery))
+ installation_id=(payload.get("installation") or {}).get("id")
+ if event=="installation" and payload.get("action")=="deleted" and installation_id:
+  installed=db.scalar(select(GitHubInstallation).where(GitHubInstallation.installation_id==installation_id))
+  if installed:db.delete(installed)
+ elif event=="push" and installation_id and not payload.get("deleted",False):
+  installed=db.scalar(select(GitHubInstallation).where(GitHubInstallation.installation_id==installation_id))
+  repo=(payload.get("repository") or {}).get("full_name","")
+  branch=(payload.get("ref") or "").removeprefix("refs/heads/")
+  if installed and repo and branch:
+   projects=db.scalars(select(Project).where(Project.org_id==installed.org_id,Project.source_type=="github",Project.source_url=="https://github.com/"+repo)).all()
+   for p in projects:
+    if (p.source_ref or (payload.get("repository") or {}).get("default_branch") or "main")==branch:
+     d=Deployment(org_id=installed.org_id,project_id=p.id,status="queued",source_type="github",source_ref=branch,logs="GitHub push received. Waiting for a registered isolated build worker.")
+     db.add(d);db.add(Usage(org_id=installed.org_id,project_id=p.id,metric="deployment_requests",quantity=1))
+ db.commit()
+ return {"ok":True,"event":event}
+
 @app.get("/api/v1/projects")
 def list_projects(ctx=Depends(current),db:Session=Depends(get_db)):
  out=[]
@@ -274,7 +434,7 @@ def list_deployments(pid:int,ctx=Depends(current),db:Session=Depends(get_db)):
 def deploy(pid:int,ctx=Depends(current),db:Session=Depends(get_db)):
  p=project(db,ctx,pid)
  if not p.source_url:raise HTTPException(422,"Connect a GitHub repository or upload a ZIP first.")
- d=queue(db,ctx,p,"github",p.source_url);log(db,ctx,"deployment.queued",d.uid);db.commit();db.refresh(d);return dep_dict(d)
+ d=queue(db,ctx,p,"github",p.source_ref or p.source_url);log(db,ctx,"deployment.queued",d.uid);db.commit();db.refresh(d);return dep_dict(d)
 @app.post("/api/v1/projects/{pid}/source/zip",status_code=202)
 async def upload(pid:int,source:UploadFile=File(...),ctx=Depends(current),db:Session=Depends(get_db)):
  p=project(db,ctx,pid);limit=int(os.getenv("MAX_UPLOAD_MB","25"))*1024*1024
