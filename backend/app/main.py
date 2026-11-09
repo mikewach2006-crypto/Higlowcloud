@@ -462,7 +462,7 @@ async def github_webhook(request:Request,db:Session=Depends(get_db)):
   if installed and repo and branch:
    projects=db.scalars(select(Project).where(Project.org_id==installed.org_id,Project.source_type=="github",Project.source_url=="https://github.com/"+repo)).all()
    for p in projects:
-    if (p.source_ref or (payload.get("repository") or {}).get("default_branch") or "main")==branch:
+    if p.auto_deploy and (p.source_ref or (payload.get("repository") or {}).get("default_branch") or "main")==branch:
      d=Deployment(org_id=installed.org_id,project_id=p.id,status="queued",source_type="github",source_ref=branch,logs="GitHub push received. Waiting for a registered isolated build worker.")
      db.add(d);db.add(Usage(org_id=installed.org_id,project_id=p.id,metric="deployment_requests",quantity=1))
  db.commit()
@@ -473,7 +473,7 @@ def list_projects(ctx=Depends(current),db:Session=Depends(get_db)):
  out=[]
  for p in db.scalars(select(Project).where(Project.org_id==ctx["org"]).order_by(desc(Project.updated_at))):
   n=db.scalar(select(func.count(Deployment.id)).where(Deployment.project_id==p.id))
-  out.append({"id":p.id,"name":p.name,"slug":p.slug,"framework":p.framework,"source_type":p.source_type,"source_url":p.source_url,"created_at":p.created_at,"deployments":n})
+  out.append({"id":p.id,"name":p.name,"slug":p.slug,"framework":p.framework,"source_type":p.source_type,"source_url":p.source_url,"source_ref":p.source_ref,"service_type":p.service_type,"root_directory":p.root_directory,"build_command":p.build_command,"start_command":p.start_command,"publish_directory":p.publish_directory,"region":p.region,"instance_type":p.instance_type,"auto_deploy":p.auto_deploy,"cron_schedule":p.cron_schedule,"created_at":p.created_at,"deployments":n})
  return out
 @app.post("/api/v1/projects",status_code=201)
 def create_project(x:ProjectIn,ctx=Depends(current),db:Session=Depends(get_db)):
