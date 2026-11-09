@@ -4,7 +4,7 @@ import './style.css'
 const configuredApi=(import.meta as any).env.VITE_API_URL as string|undefined
 const apiRoot=(configuredApi||'https://higlowcloud-api.onrender.com').trim().replace(/\/+$/,'').replace(/\/api$/,'')
 const API=apiRoot.endsWith('/api/v1')?apiRoot:`${apiRoot}/api/v1`
-type Project={id:number;name:string;slug:string;framework:string;source_type:string;source_url?:string;source_ref?:string;service_type?:string;root_directory?:string;build_command?:string;start_command?:string;publish_directory?:string;deployments:number}
+type Project={id:number;name:string;slug:string;framework:string;source_type:string;source_url?:string;source_ref?:string;service_type?:string;root_directory?:string;build_command?:string;start_command?:string;publish_directory?:string;region?:string;auto_deploy?:boolean;instance_type?:string;cron_schedule?:string;deployments:number}
 type Dep={id:number;status:string;source_type:string;source_ref:string;logs:string;created_at:string;deploy_url:string}
 const navigation:any[]=[['Overview',LayoutDashboard],['Projects',Boxes],['Deployments',Rocket],['Databases',Database],['Domains',Globe],['Environment',KeyRound],['Usage',Activity],['Audit log',ShieldCheck],['Settings',Settings]]
 export default function App(){
