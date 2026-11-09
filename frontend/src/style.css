@@ -263,3 +263,15 @@ header{background:#111113;border-bottom-color:#2b2b30}
 .btn.danger{background:#351b20;border:1px solid #71343d;color:#ffc3c8}
 .btn.danger:hover{background:#482229}
 @media(max-width:760px){.service-source{padding:10px 4px}.event-panel{padding:7px 14px}.service-event{gap:9px}.service-event>.tag{display:none}}
+
+
+/* Public service URL controls: only expose URLs confirmed by a live deployment */
+.service-live-url,.service-url-pending{display:grid;gap:7px;padding:12px 10px;margin:0 0 13px;background:#17171a;border:1px solid #34343b;border-radius:6px;min-width:0}
+.service-live-url>small,.service-url-pending>small{font-size:10px;letter-spacing:.8px;color:#9c9ca6;font-weight:700}
+.service-live-url>a{display:flex;align-items:center;gap:6px;color:#bda0ff;font-size:12px;overflow-wrap:anywhere;min-width:0}
+.service-live-url>button{display:flex;align-items:center;justify-content:center;gap:7px;padding:7px 9px;border:1px solid #48404f;border-radius:5px;background:#241d30;color:#e4d5ff;font-size:12px;font-weight:600}
+.service-url-pending>b{font-size:12px;color:#e2e2e8;font-weight:600}
+.service-url-pending>span{font-size:11px;line-height:1.5;color:#9999a3}
+.header-live-link{display:inline-flex;align-items:center;gap:6px;padding:7px 10px;border:1px solid #514265;border-radius:5px;background:#211a2b;color:#d8c4ff;font-size:12px;font-weight:600}
+.header-live-link:hover,.service-live-url>button:hover{background:#30233f}
+@media(max-width:760px){.header-live-link{font-size:0;padding:8px}.header-live-link svg{width:15px;height:15px}}
