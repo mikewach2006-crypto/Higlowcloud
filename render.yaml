@@ -19,7 +19,7 @@ services:
       - key: ADMIN_EMAILS
         value: ""
       - key: FRONTEND_ORIGIN
-        value: https://higlowcloud-web.onrender.com
+        value: https://higlowcloud.onrender.com
       - key: MAX_UPLOAD_MB
         value: "20"
       - key: UPLOAD_DIR
@@ -28,7 +28,7 @@ services:
         value: production
 
   - type: web
-    name: higlowcloud-web
+    name: higlowcloud
     runtime: static
     rootDir: frontend
     buildCommand: npm install && npm run build
