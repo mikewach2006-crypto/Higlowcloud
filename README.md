@@ -1,56 +1,38 @@
 # HiglowCloud
 
-A low-cost hosting control-plane MVP inspired by Render and Vercel.
+HiglowCloud is an email-authenticated cloud hosting control-plane MVP.
 
-## Repository layout
+## Included in this MVP
+- Email/password registration and login (no Google sign-in).
+- Workspace and organization-scoped project records.
+- GitHub HTTPS source references and ZIP upload intake.
+- Deployment queue, history, cancellation and redeploy requests.
+- Encrypted environment-variable storage.
+- Custom-domain records and DNS verification tokens.
+- PostgreSQL/Redis provisioning requests.
+- Usage event ledger and workspace audit history.
+- Platform admin overview, customer list and deployment list.
+- Responsive React dashboard and FastAPI API.
+- Render Blueprint for the dashboard, API and PostgreSQL metadata database.
 
-- `frontend/`: React + Vite dashboard.
-- `backend/`: FastAPI API and SQLAlchemy models.
-- `docs/`: architecture and security notes.
-- `render.yaml`: Render Blueprint for the control plane.
+## Important hosting boundary
+The API does not execute customer code. Deployment requests remain queued until isolated build workers and runtime nodes are provisioned and connected. GitHub URLs are source references; private GitHub App integration and actual build execution are not connected yet. Domain records do not become live routes until an edge proxy and TLS automation are configured. Database requests do not provision instances until a database agent is connected.
 
-## Current MVP
-
-- Project creation and listing.
-- ZIP upload intake with basic archive path and size checks.
-- Deployment metadata and redeploy records.
-- API health endpoint.
-- Render Blueprint for frontend, backend and PostgreSQL.
-
-## Important deployment boundary
-
-This is the **control plane**, not yet a complete public hosting runtime. ZIP uploads are validated and deployment records are created in `simulated` mode. Customer code is not executed. Real deployments require separately provisioned, isolated VPS build workers and runtime nodes.
-
-Never execute customer code inside the public API service or expose the Docker socket to it.
+Read docs/PRODUCT_SCOPE.md, docs/API_OVERVIEW.md and docs/INFRASTRUCTURE_ROADMAP.md before public launch.
 
 ## Render deployment
-
-1. In Render, select **New → Blueprint**.
-2. Connect this repository: `mikewach2006-crypto/Higlowcloud`.
-3. Render should detect the root `render.yaml`.
-4. Confirm the API service root directory is `backend`, and the static site root directory is `frontend`.
-5. After services are created, confirm `FRONTEND_ORIGIN` and `VITE_API_URL` match the actual Render URLs.
-6. Test the API health endpoint at `https://YOUR-API.onrender.com/health`.
-
-The free Render PostgreSQL plan is for testing only; do not store production customer data on a temporary free database.
+Deploy from the root render.yaml. The Blueprint generates SECRET_KEY and configures ADMIN_EMAILS for the platform operator. Confirm the actual service URLs match FRONTEND_ORIGIN and VITE_API_URL. The free Render database is for testing only. ZIP uploads currently use an ephemeral directory on the free web service; use a persistent disk or private object storage before depending on uploads across restarts.
 
 ## Local development
-
 Backend:
-```bash
-cd backend
-python -m venv .venv
-pip install -r requirements.txt
-uvicorn app.main:app --reload
-```
+    cd backend
+    pip install -r requirements.txt
+    uvicorn app.main:app --reload
 
 Frontend:
-```bash
-cd frontend
-npm install
-npm run dev
-```
+    cd frontend
+    npm install
+    npm run dev
 
-## Not production-ready yet
-
-Authentication, tenant isolation, GitHub App integration, persistent ZIP object storage, migrations, isolated build/runtime agents, custom domains, TLS automation, usage metering, billing, backups and operational monitoring remain to be implemented and security-tested before accepting customer workloads.
+## Production launch blockers
+Before accepting customers, implement and test email verification, password reset, MFA, workspace invitations/RBAC, signed worker jobs, isolated builders and runtime sandboxes, persistent object storage, TLS edge routing, managed database provisioning, metering/billing, backups, abuse controls and security monitoring.
