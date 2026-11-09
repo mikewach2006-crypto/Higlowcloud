@@ -12,10 +12,16 @@ services:
         fromDatabase:
           name: higlowcloud-db
           property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ADMIN_EMAILS
+        value: mikewach2006@gmail.com
       - key: FRONTEND_ORIGIN
         value: https://higlowcloud-web.onrender.com
       - key: MAX_UPLOAD_MB
         value: "20"
+      - key: UPLOAD_DIR
+        value: /tmp/higlowcloud/uploads
       - key: APP_ENV
         value: production
 
