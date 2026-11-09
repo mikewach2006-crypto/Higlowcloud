@@ -298,7 +298,7 @@ def me(ctx=Depends(current)):
 # GitHub App integration. Installation credentials are exchanged on demand and never stored.
 def github_app_config():
  app_id=os.getenv("GITHUB_APP_ID","").strip()
- private_key=os.getenv("GITHUB_APP_PRIVATE_KEY","").replace("\\n","\n").strip()
+ private_key=os.getenv("GITHUB_APP_PRIVATE_KEY","").replace("\n","\n").strip()
  app_slug=os.getenv("GITHUB_APP_SLUG","higlowcloud").strip()
  if not app_id or not private_key:raise HTTPException(503,"GitHub App is not configured on the API service.")
  return app_id,private_key,app_slug
@@ -599,10 +599,10 @@ def worker_claim(x:WorkerClaimIn,ok=Depends(require_worker),db:Session=Depends(g
  # Recover jobs abandoned by a worker after its lease expired.
  expired=db.scalars(select(Deployment).where(Deployment.status=="building",Deployment.lease_expires_at.is_not(None),Deployment.lease_expires_at<current_time)).all()
  for stale in expired:
-  stale.logs=(stale.logs or "")+"\\nWorker lease expired; returning deployment to queue."
+  stale.logs=(stale.logs or "")+"\nWorker lease expired; returning deployment to queue."
   stale.worker_id=None;stale.lease_expires_at=None
   if (stale.attempt_count or 0)>=3:
-   stale.status="failed";stale.finished_at=current_time;stale.logs+="\\nMaximum worker attempts reached."
+   stale.status="failed";stale.finished_at=current_time;stale.logs+="\nMaximum worker attempts reached."
   else:stale.status="queued"
  job=db.scalar(select(Deployment).where(Deployment.status=="queued").order_by(Deployment.created_at.asc(),Deployment.id.asc()).limit(1).with_for_update(skip_locked=True))
  if not job:
@@ -610,12 +610,12 @@ def worker_claim(x:WorkerClaimIn,ok=Depends(require_worker),db:Session=Depends(g
   return {"job":None,"server_time":current_time}
  project_row=db.get(Project,job.project_id)
  if not project_row or project_row.org_id!=job.org_id:
-  job.status="failed";job.finished_at=current_time;job.logs+="\\nProject is unavailable."
+  job.status="failed";job.finished_at=current_time;job.logs+="\nProject is unavailable."
   db.commit();return {"job":None,"server_time":current_time}
  job.status="building";job.worker_id=x.worker_id;job.attempt_count=(job.attempt_count or 0)+1
  lease_seconds=max(60,min(int(os.getenv("DEPLOYMENT_LEASE_SECONDS","600")),3600))
  job.lease_expires_at=current_time+timedelta(seconds=lease_seconds)
- job.logs=(job.logs or "")+"\\nClaimed by worker "+x.worker_id+" (attempt "+str(job.attempt_count)+")."
+ job.logs=(job.logs or "")+"\nClaimed by worker "+x.worker_id+" (attempt "+str(job.attempt_count)+")."
  env={}
  for item in db.scalars(select(EnvVar).where(EnvVar.org_id==job.org_id,EnvVar.project_id==job.project_id)):
   env[item.key]=dec(item.value_enc)
@@ -626,7 +626,7 @@ def worker_claim(x:WorkerClaimIn,ok=Depends(require_worker),db:Session=Depends(g
    try:github_token=github_installation_token(installed.installation_id)
    except HTTPException:
     job.status="queued";job.worker_id=None;job.lease_expires_at=None
-    job.logs+="\\nGitHub authorization could not be refreshed; job returned to queue."
+    job.logs+="\nGitHub authorization could not be refreshed; job returned to queue."
     db.commit();raise HTTPException(503,"GitHub authorization is temporarily unavailable. Retry the deployment worker.")
  db.commit()
  return {"job":{"id":job.id,"uid":job.uid,"project_id":job.project_id,"source_type":job.source_type,"source_url":project_row.source_url,"source_ref":job.source_ref,"service_type":project_row.service_type,"framework":project_row.framework,"root_directory":project_row.root_directory,"build_command":project_row.build_command,"start_command":project_row.start_command,"publish_directory":project_row.publish_directory,"cron_schedule":project_row.cron_schedule,"environment":env,"github_access_token":github_token,"lease_expires_at":job.lease_expires_at,"source_download_path":"/internal/worker/deployments/"+job.uid+"/source" if job.source_type=="zip" else None},"server_time":current_time}
@@ -635,7 +635,7 @@ def worker_claim(x:WorkerClaimIn,ok=Depends(require_worker),db:Session=Depends(g
 def worker_source(uid:str,request:Request,ok=Depends(require_worker),db:Session=Depends(get_db)):
  job=db.scalar(select(Deployment).where(Deployment.uid==uid,Deployment.status=="building",Deployment.worker_id==request.headers.get("X-HiglowCloud-Worker-Id","")))
  if not job:raise HTTPException(404,"Active deployment source not found for this worker.")
- if job.source_type!="zip" or not re.fullmatch(r"[a-f0-9]{40}\\.zip",job.source_ref or ""):raise HTTPException(404,"ZIP source is unavailable.")
+ if job.source_type!="zip" or not re.fullmatch(r"[a-f0-9]{40}\.zip",job.source_ref or ""):raise HTTPException(404,"ZIP source is unavailable.")
  path=Path(os.getenv("UPLOAD_DIR","/var/data/higlowcloud/uploads"))/job.source_ref
  if not path.is_file():raise HTTPException(410,"Uploaded source is no longer available. Please upload it again.")
  return FileResponse(path,filename="source.zip",media_type="application/zip")
@@ -645,7 +645,7 @@ def worker_append_log(uid:str,x:WorkerLogIn,ok=Depends(require_worker),db:Sessio
  job=db.scalar(select(Deployment).where(Deployment.uid==uid,Deployment.status=="building",Deployment.worker_id==x.worker_id))
  if not job:raise HTTPException(409,"Deployment is no longer leased to this worker.")
  message=redact_worker_log(db,job.org_id,job.project_id,x.message)
- job.logs=((job.logs or "")+"\\n"+message)[-500000:]
+ job.logs=((job.logs or "")+"\n"+message)[-500000:]
  job.lease_expires_at=now()+timedelta(seconds=max(60,min(int(os.getenv("DEPLOYMENT_LEASE_SECONDS","600")),3600)))
  worker=db.scalar(select(BuildWorker).where(BuildWorker.worker_id==x.worker_id))
  if worker:worker.last_seen_at=now();worker.status="online"
@@ -667,7 +667,7 @@ def worker_complete(uid:str,x:WorkerCompleteIn,ok=Depends(require_worker),db:Ses
  else:job.deploy_url=""
  if x.message:
   message=redact_worker_log(db,job.org_id,job.project_id,x.message)
-  job.logs=((job.logs or "")+"\\n"+message)[-500000:]
+  job.logs=((job.logs or "")+"\n"+message)[-500000:]
  job.status=x.status;job.finished_at=now();job.worker_id=None;job.lease_expires_at=None
  worker=db.scalar(select(BuildWorker).where(BuildWorker.worker_id==x.worker_id))
  if worker:worker.last_seen_at=now();worker.status="online"
