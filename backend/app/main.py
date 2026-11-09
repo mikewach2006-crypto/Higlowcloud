@@ -45,7 +45,7 @@ class Project(Base):
  slug:Mapped[str]=mapped_column(String(120))
  framework:Mapped[str]=mapped_column(String(60),default="auto")
  source_type:Mapped[str]=mapped_column(String(30),default="manual")
- source_url:Mapped[Optional[str]]=mapped_column(String(1000),nullable=True)
+ source_url:Mapped[str]=mapped_column(String(1000),nullable=True)
  created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=now)
  updated_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=now,onupdate=now)
 class Deployment(Base):
@@ -60,7 +60,7 @@ class Deployment(Base):
  logs:Mapped[str]=mapped_column(Text,default="Queued; waiting for isolated build worker.")
  deploy_url:Mapped[str]=mapped_column(String(1000),default="")
  created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=now)
- finished_at:Mapped[Optional[datetime]]=mapped_column(DateTime(timezone=True),nullable=True)
+ finished_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=True)
 class EnvVar(Base):
  __tablename__="environment_variables"
  id:Mapped[int]=mapped_column(primary_key=True)
@@ -92,15 +92,15 @@ class Usage(Base):
  __tablename__="usage_events"
  id:Mapped[int]=mapped_column(primary_key=True)
  org_id:Mapped[int]=mapped_column(ForeignKey("organizations.id",ondelete="CASCADE"),index=True)
- project_id:Mapped[Optional[int]]=mapped_column(ForeignKey("projects.id",ondelete="SET NULL"),nullable=True)
+ project_id:Mapped[int]=mapped_column(ForeignKey("projects.id",ondelete="SET NULL"),nullable=True)
  metric:Mapped[str]=mapped_column(String(60))
  quantity:Mapped[float]=mapped_column(Float,default=0)
  created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=now)
 class Audit(Base):
  __tablename__="audit_logs"
  id:Mapped[int]=mapped_column(primary_key=True)
- org_id:Mapped[Optional[int]]=mapped_column(ForeignKey("organizations.id",ondelete="SET NULL"),nullable=True,index=True)
- user_id:Mapped[Optional[int]]=mapped_column(ForeignKey("users.id",ondelete="SET NULL"),nullable=True)
+ org_id:Mapped[int]=mapped_column(ForeignKey("organizations.id",ondelete="SET NULL"),nullable=True,index=True)
+ user_id:Mapped[int]=mapped_column(ForeignKey("users.id",ondelete="SET NULL"),nullable=True)
  action:Mapped[str]=mapped_column(String(100))
  target:Mapped[str]=mapped_column(String(180),default="")
  created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=now)
