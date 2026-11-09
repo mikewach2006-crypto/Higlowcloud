@@ -358,7 +358,7 @@ def github_branches(owner:str,repo:str,ctx=Depends(current),db:Session=Depends(g
  data=github_api("/repos/"+urllib.parse.quote(owner,safe="")+"/"+urllib.parse.quote(repo,safe="")+"/branches?per_page=100",token=token)
  return [{"name":b["name"]} for b in data]
 @app.get("/api/v1/integrations/github/repositories/{owner}/{repo}/detect")
-def github_detect(owner:str,repo:str,branch:str="main",ctx=Depends(current),db:Session=Depends(get_db)):
+def github_detect(owner:str,repo:str,branch:str="main",service_type:str="web_service",ctx=Depends(current),db:Session=Depends(get_db)):
  if not re.fullmatch(r"[A-Za-z0-9_.-]+",owner) or not re.fullmatch(r"[A-Za-z0-9_.-]+",repo):raise HTTPException(422,"Invalid repository.")
  installed=db.scalar(select(GitHubInstallation).where(GitHubInstallation.org_id==ctx["org"]))
  if not installed:raise HTTPException(409,"Connect your GitHub account first.")
@@ -372,7 +372,8 @@ def github_detect(owner:str,repo:str,branch:str="main",ctx=Depends(current),db:S
  root_names={x.get("name","") for x in root if isinstance(x,dict)}
  root_dir=""
  names=root_names
- for candidate in ("frontend","client","web","app","backend","server"):
+ candidates=("frontend","client","web","app","backend","server") if service_type=="static_site" else ("backend","server","app","frontend","client","web")
+ for candidate in candidates:
   if not ({"package.json","requirements.txt","pyproject.toml","index.html","Dockerfile"}&names) and candidate in root_names:
    nested=listing(candidate+"/")
    nested_names={x.get("name","") for x in nested if isinstance(x,dict)}
