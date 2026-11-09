@@ -363,8 +363,8 @@ def github_import_project(x:GitHubProjectIn,ctx=Depends(current),db:Session=Depe
  info=github_api("/repos/"+urllib.parse.quote(owner,safe="")+"/"+urllib.parse.quote(repo,safe=""),token=token)
  if info.get("full_name","").lower()!=x.repository_full_name.lower():raise HTTPException(404,"Repository is not available to this GitHub installation.")
  branch=x.branch.strip()
- branches=github_api("/repos/"+urllib.parse.quote(owner,safe="")+"/"+urllib.parse.quote(repo,safe="")+"/branches/"+urllib.parse.quote(branch,safe=""),token=token)
- if not branches.get("name"):raise HTTPException(404,"Selected branch was not found.")
+ branches=github_api("/repos/"+urllib.parse.quote(owner,safe="")+"/"+urllib.parse.quote(repo,safe="")+"/branches?per_page=100",token=token)
+ if not any(b.get("name")==branch for b in branches):raise HTTPException(404,"Selected branch was not found.")
  name=x.name.strip();s=slug(name)
  if db.scalar(select(Project).where(Project.org_id==ctx["org"],Project.slug==s)):s+="-"+secrets.token_hex(2)
  url="https://github.com/"+info["full_name"]
