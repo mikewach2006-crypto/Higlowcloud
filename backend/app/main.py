@@ -718,7 +718,9 @@ def audit_list(ctx=Depends(current),db:Session=Depends(get_db)):
  return [{"action":a.action,"target":a.target,"created_at":a.created_at} for a in db.scalars(select(Audit).where(Audit.org_id==ctx["org"]).order_by(desc(Audit.created_at)).limit(100))]
 @app.get("/api/v1/admin/overview")
 def admin_overview(ctx=Depends(platform_admin),db:Session=Depends(get_db)):
- return {"users":db.query(User).count(),"workspaces":db.query(Organization).count(),"projects":db.query(Project).count(),"deployments":db.query(Deployment).count(),"queued":db.query(Deployment).filter(Deployment.status=="queued").count(),"workers":"not connected","runtime":"not connected"}
+ cutoff=now()-timedelta(seconds=120)
+ active_workers=db.scalar(select(func.count(BuildWorker.id)).where(BuildWorker.status=="online",BuildWorker.last_seen_at>=cutoff)) or 0
+ return {"users":db.query(User).count(),"workspaces":db.query(Organization).count(),"projects":db.query(Project).count(),"deployments":db.query(Deployment).count(),"queued":db.query(Deployment).filter(Deployment.status=="queued").count(),"workers":active_workers,"worker_status":"connected" if active_workers else "not_connected","runtime":"not connected"}
 @app.get("/api/v1/admin/users")
 def admin_users(ctx=Depends(platform_admin),db:Session=Depends(get_db)):
  return [{"id":u.id,"email":u.email,"name":u.name,"active":u.active,"admin":u.admin,"created_at":u.created_at} for u in db.scalars(select(User).order_by(desc(User.created_at)).limit(500))]
