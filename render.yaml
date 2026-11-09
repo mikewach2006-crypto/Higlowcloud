@@ -15,7 +15,7 @@ services:
       - key: SECRET_KEY
         generateValue: true
       - key: ADMIN_EMAILS
-        value: mikewach2006@gmail.com
+        value: ""
       - key: FRONTEND_ORIGIN
         value: https://higlowcloud-web.onrender.com
       - key: MAX_UPLOAD_MB
