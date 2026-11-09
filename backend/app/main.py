@@ -212,16 +212,17 @@ def register(x:Register,db:Session=Depends(get_db)):
  u=User(email=email,name=x.name.strip(),password_hash=pw_hash(x.password),admin=email in ADMINS)
  org=Organization(name=(x.name.strip()+" workspace")[:120],slug=slug(email.split("@")[0])+"-"+secrets.token_hex(3))
  db.add_all([u,org]);db.flush();db.add(Membership(user_id=u.id,org_id=org.id,role="owner"))
- # Adopt pre-authentication MVP records into the first registered workspace instead of discarding them.
- legacy=db.scalars(select(Project).where(Project.org_id.is_(None))).all()
- for old_project in legacy:
-  old_project.org_id=org.id
-  if not old_project.slug: old_project.slug=slug(old_project.name)+"-legacy-"+str(old_project.id)
-  if not old_project.framework: old_project.framework="auto"
-  if not old_project.updated_at: old_project.updated_at=old_project.created_at or now()
- for old_deploy in db.scalars(select(Deployment).where(Deployment.org_id.is_(None))).all():
-  parent=db.get(Project,old_deploy.project_id)
-  if parent and parent.org_id==org.id: old_deploy.org_id=org.id
+ # Only the configured platform owner may adopt legacy pre-authentication records.
+ if u.admin:
+  legacy=db.scalars(select(Project).where(Project.org_id.is_(None))).all()
+  for old_project in legacy:
+   old_project.org_id=org.id
+   if not old_project.slug: old_project.slug=slug(old_project.name)+"-legacy-"+str(old_project.id)
+   if not old_project.framework: old_project.framework="auto"
+   if not old_project.updated_at: old_project.updated_at=old_project.created_at or now()
+  for old_deploy in db.scalars(select(Deployment).where(Deployment.org_id.is_(None))).all():
+   parent=db.get(Project,old_deploy.project_id)
+   if parent and parent.org_id==org.id: old_deploy.org_id=org.id
  db.add(Audit(org_id=org.id,user_id=u.id,action="auth.register",target=email));db.commit()
  return {"access_token":make_token(u,org.id),"token_type":"bearer","user":{"id":u.id,"email":u.email,"name":u.name},"workspace":{"id":org.id,"name":org.name}}
 @app.post("/api/v1/auth/login")
