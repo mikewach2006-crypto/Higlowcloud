@@ -4,7 +4,7 @@ from datetime import datetime,timedelta,timezone
 from pathlib import Path,PurePosixPath
 from typing import Optional
 from fastapi import FastAPI,Depends,HTTPException,UploadFile,File,Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse,FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer,HTTPAuthorizationCredentials
 from pydantic import BaseModel,Field
@@ -74,6 +74,17 @@ class Deployment(Base):
  deploy_url:Mapped[str]=mapped_column(String(1000),default="")
  created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=now)
  finished_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=True)
+ worker_id:Mapped[str]=mapped_column(String(120),nullable=True)
+ lease_expires_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=True)
+ attempt_count:Mapped[int]=mapped_column(default=0)
+class BuildWorker(Base):
+ __tablename__="build_workers"
+ id:Mapped[int]=mapped_column(primary_key=True)
+ worker_id:Mapped[str]=mapped_column(String(120),unique=True,index=True)
+ status:Mapped[str]=mapped_column(String(30),default="online")
+ version:Mapped[str]=mapped_column(String(80),default="")
+ last_seen_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=now)
+ created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=now)
 class EnvVar(Base):
  __tablename__="environment_variables"
  id:Mapped[int]=mapped_column(primary_key=True)
@@ -149,7 +160,8 @@ def migrate_legacy_schema():
   },
   "deployments":{
    "uid":"VARCHAR(36)","org_id":"INTEGER REFERENCES organizations(id)","source_type":"VARCHAR(30)",
-   "source_ref":"VARCHAR(1000)","deploy_url":"VARCHAR(1000)","finished_at":"TIMESTAMP"
+   "source_ref":"VARCHAR(1000)","deploy_url":"VARCHAR(1000)","finished_at":"TIMESTAMP",
+   "worker_id":"VARCHAR(120)","lease_expires_at":"TIMESTAMP","attempt_count":"INTEGER DEFAULT 0"
   }
  }
  with engine.begin() as conn:
@@ -231,6 +243,10 @@ class ProjectIn(BaseModel):
 class EnvIn(BaseModel):key:str=Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,179}$");value:str=Field(max_length=10000);secret:bool=True
 class DomainIn(BaseModel):hostname:str
 class DbIn(BaseModel):name:str=Field(min_length=1,max_length=120);engine:str="postgres"
+class WorkerHeartbeatIn(BaseModel):worker_id:str=Field(min_length=3,max_length=120,pattern=r"^[A-Za-z0-9_.-]+$");version:str=Field(default="",max_length=80)
+class WorkerClaimIn(BaseModel):worker_id:str=Field(min_length=3,max_length=120,pattern=r"^[A-Za-z0-9_.-]+$")
+class WorkerLogIn(BaseModel):worker_id:str=Field(min_length=3,max_length=120);message:str=Field(min_length=1,max_length=16000)
+class WorkerCompleteIn(BaseModel):worker_id:str=Field(min_length=3,max_length=120);status:str=Field(pattern=r"^(live|failed)$");deploy_url:Optional[str]=None;message:str=Field(default="",max_length=16000)
 
 @app.get("/")
 def root():
@@ -242,7 +258,10 @@ def health(db:Session=Depends(get_db)):
  except Exception:raise HTTPException(503,"Database unavailable.")
  return {"status":"ok","database":"connected","service":"higlowcloud-api","version":"1.0.0"}
 @app.get("/api/v1/status")
-def status():return {"control_plane":"operational","build_workers":"not_connected","runtime_nodes":"not_connected","domain_edge":"not_connected","database_provisioner":"not_connected"}
+def status(db:Session=Depends(get_db)):
+ cutoff=now()-timedelta(seconds=120)
+ active=db.scalar(select(func.count(BuildWorker.id)).where(BuildWorker.status=="online",BuildWorker.last_seen_at>=cutoff)) or 0
+ return {"control_plane":"operational","build_workers":"connected" if active else "not_connected","active_workers":active,"runtime_nodes":"not_connected","domain_edge":"not_connected","database_provisioner":"not_connected"}
 @app.post("/api/v1/auth/register",status_code=201)
 def register(x:Register,db:Session=Depends(get_db)):
  email=x.email.strip().lower()
@@ -542,6 +561,118 @@ def logs(did:int,ctx=Depends(current),db:Session=Depends(get_db)):
  d=db.scalar(select(Deployment).where(Deployment.id==did,Deployment.org_id==ctx["org"]))
  if not d:raise HTTPException(404,"Deployment not found.")
  return {"status":d.status,"logs":d.logs}
+
+# Private worker control-plane API. Never expose this token to dashboard clients.
+def require_worker(request:Request):
+ configured=os.getenv("DEPLOY_WORKER_TOKEN","").strip()
+ if len(configured)<32:raise HTTPException(503,"Deployment worker authentication is not configured.")
+ supplied=request.headers.get("X-HiglowCloud-Worker-Token","")
+ if not hmac.compare_digest(supplied,configured):raise HTTPException(401,"Worker authentication failed.")
+ return True
+
+def redact_worker_log(db,org_id,project_id,message):
+ value=message
+ for item in db.scalars(select(EnvVar).where(EnvVar.org_id==org_id,EnvVar.project_id==project_id,EnvVar.secret.is_(True))):
+  try:
+   secret_value=dec(item.value_enc)
+   if secret_value:value=value.replace(secret_value,"[REDACTED]")
+  except HTTPException:pass
+ return value[:16000]
+
+@app.post("/internal/worker/heartbeat")
+def worker_heartbeat(x:WorkerHeartbeatIn,ok=Depends(require_worker),db:Session=Depends(get_db)):
+ worker=db.scalar(select(BuildWorker).where(BuildWorker.worker_id==x.worker_id))
+ if not worker:
+  worker=BuildWorker(worker_id=x.worker_id,status="online",version=x.version[:80],last_seen_at=now());db.add(worker)
+ else:
+  worker.status="online";worker.version=x.version[:80];worker.last_seen_at=now()
+ db.commit()
+ return {"ok":True,"server_time":now(),"lease_seconds":int(os.getenv("DEPLOYMENT_LEASE_SECONDS","600"))}
+
+@app.post("/internal/worker/claim")
+def worker_claim(x:WorkerClaimIn,ok=Depends(require_worker),db:Session=Depends(get_db)):
+ current_time=now()
+ worker=db.scalar(select(BuildWorker).where(BuildWorker.worker_id==x.worker_id))
+ if not worker:
+  worker=BuildWorker(worker_id=x.worker_id,status="online",last_seen_at=current_time);db.add(worker)
+ worker.status="online";worker.last_seen_at=current_time
+ # Recover jobs abandoned by a worker after its lease expired.
+ expired=db.scalars(select(Deployment).where(Deployment.status=="building",Deployment.lease_expires_at.is_not(None),Deployment.lease_expires_at<current_time)).all()
+ for stale in expired:
+  stale.logs=(stale.logs or "")+"\\nWorker lease expired; returning deployment to queue."
+  stale.worker_id=None;stale.lease_expires_at=None
+  if (stale.attempt_count or 0)>=3:
+   stale.status="failed";stale.finished_at=current_time;stale.logs+="\\nMaximum worker attempts reached."
+  else:stale.status="queued"
+ job=db.scalar(select(Deployment).where(Deployment.status=="queued").order_by(Deployment.created_at.asc(),Deployment.id.asc()).limit(1).with_for_update(skip_locked=True))
+ if not job:
+  db.commit()
+  return {"job":None,"server_time":current_time}
+ project_row=db.get(Project,job.project_id)
+ if not project_row or project_row.org_id!=job.org_id:
+  job.status="failed";job.finished_at=current_time;job.logs+="\\nProject is unavailable."
+  db.commit();return {"job":None,"server_time":current_time}
+ job.status="building";job.worker_id=x.worker_id;job.attempt_count=(job.attempt_count or 0)+1
+ lease_seconds=max(60,min(int(os.getenv("DEPLOYMENT_LEASE_SECONDS","600")),3600))
+ job.lease_expires_at=current_time+timedelta(seconds=lease_seconds)
+ job.logs=(job.logs or "")+"\\nClaimed by worker "+x.worker_id+" (attempt "+str(job.attempt_count)+")."
+ env={}
+ for item in db.scalars(select(EnvVar).where(EnvVar.org_id==job.org_id,EnvVar.project_id==job.project_id)):
+  env[item.key]=dec(item.value_enc)
+ github_token=None
+ if job.source_type=="github":
+  installed=db.scalar(select(GitHubInstallation).where(GitHubInstallation.org_id==job.org_id))
+  if installed:
+   try:github_token=github_installation_token(installed.installation_id)
+   except HTTPException:
+    job.status="queued";job.worker_id=None;job.lease_expires_at=None
+    job.logs+="\\nGitHub authorization could not be refreshed; job returned to queue."
+    db.commit();raise HTTPException(503,"GitHub authorization is temporarily unavailable. Retry the deployment worker.")
+ db.commit()
+ return {"job":{"id":job.id,"uid":job.uid,"project_id":job.project_id,"source_type":job.source_type,"source_url":project_row.source_url,"source_ref":job.source_ref,"service_type":project_row.service_type,"framework":project_row.framework,"root_directory":project_row.root_directory,"build_command":project_row.build_command,"start_command":project_row.start_command,"publish_directory":project_row.publish_directory,"cron_schedule":project_row.cron_schedule,"environment":env,"github_access_token":github_token,"lease_expires_at":job.lease_expires_at,"source_download_path":"/internal/worker/deployments/"+job.uid+"/source" if job.source_type=="zip" else None},"server_time":current_time}
+
+@app.get("/internal/worker/deployments/{uid}/source")
+def worker_source(uid:str,request:Request,ok=Depends(require_worker),db:Session=Depends(get_db)):
+ job=db.scalar(select(Deployment).where(Deployment.uid==uid,Deployment.status=="building",Deployment.worker_id==request.headers.get("X-HiglowCloud-Worker-Id","")))
+ if not job:raise HTTPException(404,"Active deployment source not found for this worker.")
+ if job.source_type!="zip" or not re.fullmatch(r"[a-f0-9]{40}\\.zip",job.source_ref or ""):raise HTTPException(404,"ZIP source is unavailable.")
+ path=Path(os.getenv("UPLOAD_DIR","/var/data/higlowcloud/uploads"))/job.source_ref
+ if not path.is_file():raise HTTPException(410,"Uploaded source is no longer available. Please upload it again.")
+ return FileResponse(path,filename="source.zip",media_type="application/zip")
+
+@app.post("/internal/worker/deployments/{uid}/logs")
+def worker_append_log(uid:str,x:WorkerLogIn,ok=Depends(require_worker),db:Session=Depends(get_db)):
+ job=db.scalar(select(Deployment).where(Deployment.uid==uid,Deployment.status=="building",Deployment.worker_id==x.worker_id))
+ if not job:raise HTTPException(409,"Deployment is no longer leased to this worker.")
+ message=redact_worker_log(db,job.org_id,job.project_id,x.message)
+ job.logs=((job.logs or "")+"\\n"+message)[-500000:]
+ job.lease_expires_at=now()+timedelta(seconds=max(60,min(int(os.getenv("DEPLOYMENT_LEASE_SECONDS","600")),3600)))
+ worker=db.scalar(select(BuildWorker).where(BuildWorker.worker_id==x.worker_id))
+ if worker:worker.last_seen_at=now();worker.status="online"
+ db.commit()
+ return {"ok":True,"lease_expires_at":job.lease_expires_at}
+
+@app.post("/internal/worker/deployments/{uid}/complete")
+def worker_complete(uid:str,x:WorkerCompleteIn,ok=Depends(require_worker),db:Session=Depends(get_db)):
+ job=db.scalar(select(Deployment).where(Deployment.uid==uid,Deployment.status=="building",Deployment.worker_id==x.worker_id))
+ if not job:raise HTTPException(409,"Deployment is no longer leased to this worker.")
+ if x.status=="live":
+  if not x.deploy_url:raise HTTPException(422,"A verified HTTPS deployment URL is required for a live deployment.")
+  parsed=urllib.parse.urlparse(x.deploy_url)
+  base=os.getenv("DEPLOYMENT_BASE_DOMAIN","").strip().lower().lstrip(".")
+  hostname=(parsed.hostname or "").lower()
+  if parsed.scheme!="https" or not hostname or not base or not (hostname==base or hostname.endswith("."+base)):
+   raise HTTPException(422,"Live deployment URLs must use HTTPS on the configured deployment domain.")
+  job.deploy_url=x.deploy_url
+ else:job.deploy_url=""
+ if x.message:
+  message=redact_worker_log(db,job.org_id,job.project_id,x.message)
+  job.logs=((job.logs or "")+"\\n"+message)[-500000:]
+ job.status=x.status;job.finished_at=now();job.worker_id=None;job.lease_expires_at=None
+ worker=db.scalar(select(BuildWorker).where(BuildWorker.worker_id==x.worker_id))
+ if worker:worker.last_seen_at=now();worker.status="online"
+ db.commit();db.refresh(job)
+ return {"ok":True,"deployment":{"id":job.id,"uid":job.uid,"status":job.status,"deploy_url":job.deploy_url,"finished_at":job.finished_at}}
 @app.get("/api/v1/projects/{pid}/env")
 def env_list(pid:int,ctx=Depends(current),db:Session=Depends(get_db)):
  project(db,ctx,pid);return [{"id":v.id,"key":v.key,"secret":v.secret,"value":None if v.secret else dec(v.value_enc),"updated_at":v.updated_at} for v in db.scalars(select(EnvVar).where(EnvVar.project_id==pid,EnvVar.org_id==ctx["org"]))]
