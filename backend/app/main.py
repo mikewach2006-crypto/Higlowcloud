@@ -7,7 +7,7 @@ from fastapi import FastAPI,Depends,HTTPException,UploadFile,File,Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer,HTTPAuthorizationCredentials
 from pydantic import BaseModel,Field
-from sqlalchemy import String,DateTime,ForeignKey,Text,Boolean,Float,select,desc,func
+from sqlalchemy import String,DateTime,ForeignKey,Text,Boolean,Float,select,desc,func,inspect,text
 from sqlalchemy.orm import Mapped,mapped_column,Session
 from .database import Base,engine,get_db
 from cryptography.fernet import Fernet,InvalidToken
@@ -106,6 +106,38 @@ class Audit(Base):
  created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=now)
 
 Base.metadata.create_all(bind=engine)
+
+# Upgrade the original unauthenticated MVP tables in place without dropping customer data.
+def migrate_legacy_schema():
+ additions={
+  "projects":{
+   "org_id":"INTEGER REFERENCES organizations(id)","slug":"VARCHAR(120)","framework":"VARCHAR(60)",
+   "source_url":"VARCHAR(1000)","updated_at":"TIMESTAMP"
+  },
+  "deployments":{
+   "uid":"VARCHAR(36)","org_id":"INTEGER REFERENCES organizations(id)","source_type":"VARCHAR(30)",
+   "source_ref":"VARCHAR(1000)","deploy_url":"VARCHAR(1000)","finished_at":"TIMESTAMP"
+  }
+ }
+ with engine.begin() as conn:
+  tables=set(inspect(conn).get_table_names())
+  for table,columns in additions.items():
+   if table not in tables: continue
+   existing={x["name"] for x in inspect(conn).get_columns(table)}
+   for name,definition in columns.items():
+    if name not in existing: conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {definition}"))
+  if "projects" in tables:
+   conn.execute(text("UPDATE projects SET slug = 'legacy-' || id WHERE slug IS NULL OR slug = ''"))
+   conn.execute(text("UPDATE projects SET framework = 'auto' WHERE framework IS NULL OR framework = ''"))
+   conn.execute(text("UPDATE projects SET updated_at = created_at WHERE updated_at IS NULL"))
+  if "deployments" in tables:
+   conn.execute(text("UPDATE deployments SET source_type = 'legacy' WHERE source_type IS NULL OR source_type = ''"))
+   conn.execute(text("UPDATE deployments SET source_ref = '' WHERE source_ref IS NULL"))
+   conn.execute(text("UPDATE deployments SET deploy_url = '' WHERE deploy_url IS NULL"))
+   for row in conn.execute(text("SELECT id FROM deployments WHERE uid IS NULL")).fetchall():
+    conn.execute(text("UPDATE deployments SET uid = :uid WHERE id = :id"),{"uid":str(uuid.uuid4()),"id":row[0]})
+migrate_legacy_schema()
+
 app=FastAPI(title="HiglowCloud API",version="1.0.0")
 origins=[x.strip() for x in os.getenv("FRONTEND_ORIGIN","http://localhost:5173").split(",") if x.strip()]
 app.add_middleware(CORSMiddleware,allow_origins=origins,allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
@@ -179,7 +211,18 @@ def register(x:Register,db:Session=Depends(get_db)):
  if db.scalar(select(User).where(User.email==email)):raise HTTPException(409,"Email already registered.")
  u=User(email=email,name=x.name.strip(),password_hash=pw_hash(x.password),admin=email in ADMINS)
  org=Organization(name=(x.name.strip()+" workspace")[:120],slug=slug(email.split("@")[0])+"-"+secrets.token_hex(3))
- db.add_all([u,org]);db.flush();db.add(Membership(user_id=u.id,org_id=org.id,role="owner"));db.add(Audit(org_id=org.id,user_id=u.id,action="auth.register",target=email));db.commit()
+ db.add_all([u,org]);db.flush();db.add(Membership(user_id=u.id,org_id=org.id,role="owner"))
+ # Adopt pre-authentication MVP records into the first registered workspace instead of discarding them.
+ legacy=db.scalars(select(Project).where(Project.org_id.is_(None))).all()
+ for old_project in legacy:
+  old_project.org_id=org.id
+  if not old_project.slug: old_project.slug=slug(old_project.name)+"-legacy-"+str(old_project.id)
+  if not old_project.framework: old_project.framework="auto"
+  if not old_project.updated_at: old_project.updated_at=old_project.created_at or now()
+ for old_deploy in db.scalars(select(Deployment).where(Deployment.org_id.is_(None))).all():
+  parent=db.get(Project,old_deploy.project_id)
+  if parent and parent.org_id==org.id: old_deploy.org_id=org.id
+ db.add(Audit(org_id=org.id,user_id=u.id,action="auth.register",target=email));db.commit()
  return {"access_token":make_token(u,org.id),"token_type":"bearer","user":{"id":u.id,"email":u.email,"name":u.name},"workspace":{"id":org.id,"name":org.name}}
 @app.post("/api/v1/auth/login")
 def login(x:Login,db:Session=Depends(get_db)):
