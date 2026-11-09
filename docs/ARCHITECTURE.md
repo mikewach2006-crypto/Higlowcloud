@@ -2,10 +2,12 @@
 
 HiglowCloud separates three planes:
 
-- **Control plane:** React dashboard, FastAPI API and PostgreSQL metadata hosted on Render.
-- **Build plane:** isolated workers on separately provisioned VPS infrastructure. They fetch source, build images and report logs.
-- **Runtime plane:** customer application containers on VPS nodes, routed through a proxy with managed TLS.
+- Control plane: React dashboard, FastAPI API and PostgreSQL metadata hosted on Render.
+- Build plane: isolated workers on separately provisioned VPS infrastructure.
+- Runtime plane: customer application workloads on VPS nodes behind an edge proxy with managed TLS.
 
-The public API must never execute customer code or expose the Docker socket. The current MVP accepts ZIP metadata and marks deployments as simulated. A production build agent, tenant isolation, authentication, resource quotas, network policy, secrets management, backups and abuse controls are still required.
+The API manages identities, workspaces, projects, deployment requests, environment variables, domain claims, database requests, usage records and audit events. It does not execute customer code or expose the Docker socket.
 
-Initial customer flow: create project → upload ZIP → validate archive → create deployment record → later dispatch a signed job to an isolated build worker.
+The current deployment lifecycle stops at a durable deployment request in the metadata database. A separate worker fleet, artifact storage, runtime orchestration and edge routing must be connected before deployments become live.
+
+Legacy project/deployment tables from the first unauthenticated MVP are upgraded in place on API startup. Existing unassigned project records are adopted into the first registered workspace so the initial data is not silently discarded.
