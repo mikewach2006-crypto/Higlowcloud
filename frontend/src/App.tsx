@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Cloud, Rocket, FolderGit2, Plus, UploadCloud, Activity, Database, Settings, Github, ArrowUpRight } from 'lucide-react'
+import { Cloud, Rocket, FolderGit2, Plus, UploadCloud, Activity, Database, Settings, GitBranch, ArrowUpRight } from 'lucide-react'
 
 const API = (import.meta as any).env.VITE_API_URL || 'http://localhost:8000/api/v1'
 type Project = { id:number; name:string; source_type:string; created_at:string }
@@ -50,7 +50,7 @@ export default function App() {
         <div className="notice"><span className="pulse"></span>{notice}</div>
         <div className="stats"><article><small>Projects</small><b>{projects.length}</b><span>In this workspace</span></article><article><small>Deployments</small><b>—</b><span>Agent connection pending</span></article><article><small>Build minutes</small><b>—</b><span>Metering coming later</span></article><article><small>Databases</small><b>—</b><span>Provisioning coming later</span></article></div>
         <div className="sectionTitle"><div><h2>Projects</h2><p>Your applications and services</p></div><button className="link" onClick={()=>setShow(true)}>Create project <ArrowUpRight size={14}/></button></div>
-        {projects.length===0 ? <div className="empty"><div className="emptyIcon"><Rocket size={25}/></div><h3>Start with your first project</h3><p>Import a repository or upload a ZIP archive to get started.</p><div className="actions"><button className="primary" onClick={()=>setShow(true)}><Plus size={15}/> Create project</button><button className="secondary" onClick={()=>setShow(true)}><Github size={15}/> Connect GitHub</button></div></div> :
+        {projects.length===0 ? <div className="empty"><div className="emptyIcon"><Rocket size={25}/></div><h3>Start with your first project</h3><p>Import a repository or upload a ZIP archive to get started.</p><div className="actions"><button className="primary" onClick={()=>setShow(true)}><Plus size={15}/> Create project</button><button className="secondary" onClick={()=>setShow(true)}><GitBranch size={15}/> Connect GitHub</button></div></div> :
         <div className="projectGrid">{projects.map(p=><article className="project" key={p.id}><div className="projectIcon"><FolderGit2 size={20}/></div><h3>{p.name}</h3><p>{p.source_type.replace('_',' ')}</p><footer>Created {new Date(p.created_at).toLocaleDateString()} <span>Project #{p.id}</span></footer></article>)}</div>}
         <div className="features"><div><UploadCloud/><b>ZIP uploads</b><small>Upload your source archive.</small></div><div><Github/><b>GitHub integration</b><small>Repository connection is next.</small></div><div><Activity/><b>Deployment activity</b><small>Secure build agent is pending.</small></div></div>
         <p className="disclaimer">HiglowCloud control plane preview. Customer application code is not executed by this API.</p>
