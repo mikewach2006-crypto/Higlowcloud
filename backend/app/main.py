@@ -360,30 +360,46 @@ def github_branches(owner:str,repo:str,ctx=Depends(current),db:Session=Depends(g
 @app.get("/api/v1/integrations/github/repositories/{owner}/{repo}/detect")
 def github_detect(owner:str,repo:str,branch:str="main",ctx=Depends(current),db:Session=Depends(get_db)):
  if not re.fullmatch(r"[A-Za-z0-9_.-]+",owner) or not re.fullmatch(r"[A-Za-z0-9_.-]+",repo):raise HTTPException(422,"Invalid repository.")
- item=db.scalar(select(GitHubInstallation).where(GitHubInstallation.org_id==ctx["org"]))
- if not item:raise HTTPException(409,"Connect your GitHub account first.")
- token=github_installation_token(item.installation_id)
- path="/repos/"+urllib.parse.quote(owner,safe="")+"/"+urllib.parse.quote(repo,safe="")+"/contents/"
- try: files=github_api(path+"?ref="+urllib.parse.quote(branch,safe=""),token=token)
- except HTTPException: files=[]
- names={x.get("name","") for x in files if isinstance(x,dict)}
+ installed=db.scalar(select(GitHubInstallation).where(GitHubInstallation.org_id==ctx["org"]))
+ if not installed:raise HTTPException(409,"Connect your GitHub account first.")
+ token=github_installation_token(installed.installation_id)
+ base="/repos/"+urllib.parse.quote(owner,safe="")+"/"+urllib.parse.quote(repo,safe="")+"/contents/"
+ ref="?ref="+urllib.parse.quote(branch,safe="")
+ def listing(directory=""):
+  try:return github_api(base+directory+ref,token=token)
+  except HTTPException:return []
+ root=listing()
+ root_names={x.get("name","") for x in root if isinstance(x,dict)}
+ root_dir=""
+ names=root_names
+ for candidate in ("frontend","client","web","app","backend","server"):
+  if not ({"package.json","requirements.txt","pyproject.toml","index.html","Dockerfile"}&names) and candidate in root_names:
+   nested=listing(candidate+"/")
+   nested_names={x.get("name","") for x in nested if isinstance(x,dict)}
+   if {"package.json","requirements.txt","pyproject.toml","index.html","Dockerfile"}&nested_names:
+    root_dir=candidate;names=nested_names;break
  def read_json(filename):
   if filename not in names:return {}
   try:
-   item=github_api(path+urllib.parse.quote(filename,safe="")+"?ref="+urllib.parse.quote(branch,safe=""),token=token)
+   item=github_api(base+root_dir+"/"+filename+ref if root_dir else base+filename+ref,token=token)
    return json.loads(base64.b64decode(item.get("content","")).decode())
   except Exception:return {}
- package=read_json("package.json");scripts=package.get("scripts",{}) if isinstance(package,dict) else {}
+ package=read_json("package.json")
+ scripts=package.get("scripts",{}) if isinstance(package,dict) else {}
+ dependencies={}
+ if isinstance(package,dict):
+  dependencies.update(package.get("dependencies",{}) or {})
+  dependencies.update(package.get("devDependencies",{}) or {})
  framework="auto";service="web_service";build="";start="";publish=""
  if "Dockerfile" in names:framework="Docker";build="docker build ."
- elif "next.config.js" in names or "next.config.mjs" in names or "next.config.ts" in names:framework="Next.js";build="npm install && npm run build";start="npm run start"
- elif "vite.config.js" in names or "vite.config.ts" in names or "vite.config.mjs" in names:framework="React / Vite";service="static_site";build="npm install && npm run build";publish="dist"
- elif "angular.json" in names:framework="Angular";service="static_site";build="npm install && npm run build";publish="dist"
+ elif "next" in dependencies or any(n.startswith("next.config.") for n in names):framework="Next.js";build="npm install && npm run build" if "build" in scripts else "npm install";start="npm run start" if "start" in scripts else "npm start"
+ elif "vite" in dependencies or any(n.startswith("vite.config.") for n in names):framework="React / Vite";service="static_site";build="npm install && npm run build" if "build" in scripts else "npm install";publish="dist"
+ elif "angular.json" in names:framework="Angular";service="static_site";build="npm install && npm run build" if "build" in scripts else "npm install";publish="dist"
  elif "package.json" in names:framework="Node.js";build="npm install";start="npm start" if "start" in scripts else ("node index.js" if "index.js" in names else "")
  elif "manage.py" in names:framework="Django";build="pip install -r requirements.txt";start="gunicorn config.wsgi:application"
  elif "requirements.txt" in names or "pyproject.toml" in names:framework="Python";build="pip install -r requirements.txt" if "requirements.txt" in names else "pip install .";start="uvicorn app.main:app --host 0.0.0.0 --port $PORT" if "main.py" in names else ""
  elif "index.html" in names:framework="Static HTML";service="static_site";publish="."
- return {"framework":framework,"service_type":service,"build_command":build,"start_command":start,"publish_directory":publish,"root_directory":"","files":sorted(names)[:100]}
+ return {"framework":framework,"service_type":service,"build_command":build,"start_command":start,"publish_directory":publish,"root_directory":root_dir,"files":sorted(names)[:100]}
 class GitHubProjectIn(BaseModel):
  name:str=Field(min_length=1,max_length=120)
  repository_full_name:str
