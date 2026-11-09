@@ -50,6 +50,15 @@ class Project(Base):
  source_type:Mapped[str]=mapped_column(String(30),default="manual")
  source_url:Mapped[str]=mapped_column(String(1000),nullable=True)
  source_ref:Mapped[str]=mapped_column(String(255),default="")
+ service_type:Mapped[str]=mapped_column(String(40),default="web_service")
+ root_directory:Mapped[str]=mapped_column(String(500),default="")
+ build_command:Mapped[str]=mapped_column(String(1000),default="")
+ start_command:Mapped[str]=mapped_column(String(1000),default="")
+ publish_directory:Mapped[str]=mapped_column(String(500),default="")
+ region:Mapped[str]=mapped_column(String(80),default="oregon")
+ instance_type:Mapped[str]=mapped_column(String(40),default="starter")
+ auto_deploy:Mapped[bool]=mapped_column(Boolean,default=True)
+ cron_schedule:Mapped[str]=mapped_column(String(100),default="")
  created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=now)
  updated_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=now,onupdate=now)
 class Deployment(Base):
@@ -136,7 +145,7 @@ def migrate_legacy_schema():
  additions={
   "projects":{
    "org_id":"INTEGER REFERENCES organizations(id)","slug":"VARCHAR(120)","framework":"VARCHAR(60)",
-   "source_url":"VARCHAR(1000)","source_ref":"VARCHAR(255)","updated_at":"TIMESTAMP"
+   "source_url":"VARCHAR(1000)","source_ref":"VARCHAR(255)","service_type":"VARCHAR(40) DEFAULT 'web_service'","root_directory":"VARCHAR(500) DEFAULT ''","build_command":"VARCHAR(1000) DEFAULT ''","start_command":"VARCHAR(1000) DEFAULT ''","publish_directory":"VARCHAR(500) DEFAULT ''","region":"VARCHAR(80) DEFAULT 'oregon'","instance_type":"VARCHAR(40) DEFAULT 'starter'","auto_deploy":"BOOLEAN DEFAULT TRUE","cron_schedule":"VARCHAR(100) DEFAULT ''","updated_at":"TIMESTAMP"
   },
   "deployments":{
    "uid":"VARCHAR(36)","org_id":"INTEGER REFERENCES organizations(id)","source_type":"VARCHAR(30)",
@@ -348,11 +357,47 @@ def github_branches(owner:str,repo:str,ctx=Depends(current),db:Session=Depends(g
  token=github_installation_token(item.installation_id)
  data=github_api("/repos/"+urllib.parse.quote(owner,safe="")+"/"+urllib.parse.quote(repo,safe="")+"/branches?per_page=100",token=token)
  return [{"name":b["name"]} for b in data]
+@app.get("/api/v1/integrations/github/repositories/{owner}/{repo}/detect")
+def github_detect(owner:str,repo:str,branch:str="main",ctx=Depends(current),db:Session=Depends(get_db)):
+ if not re.fullmatch(r"[A-Za-z0-9_.-]+",owner) or not re.fullmatch(r"[A-Za-z0-9_.-]+",repo):raise HTTPException(422,"Invalid repository.")
+ item=db.scalar(select(GitHubInstallation).where(GitHubInstallation.org_id==ctx["org"]))
+ if not item:raise HTTPException(409,"Connect your GitHub account first.")
+ token=github_installation_token(item.installation_id)
+ path="/repos/"+urllib.parse.quote(owner,safe="")+"/"+urllib.parse.quote(repo,safe="")+"/contents/"
+ try: files=github_api(path+"?ref="+urllib.parse.quote(branch,safe=""),token=token)
+ except HTTPException: files=[]
+ names={x.get("name","") for x in files if isinstance(x,dict)}
+ def read_json(filename):
+  if filename not in names:return {}
+  try:
+   item=github_api(path+urllib.parse.quote(filename,safe="")+"?ref="+urllib.parse.quote(branch,safe=""),token=token)
+   return json.loads(base64.b64decode(item.get("content","")).decode())
+  except Exception:return {}
+ package=read_json("package.json");scripts=package.get("scripts",{}) if isinstance(package,dict) else {}
+ framework="auto";service="web_service";build="";start="";publish=""
+ if "Dockerfile" in names:framework="Docker";build="docker build ."
+ elif "next.config.js" in names or "next.config.mjs" in names or "next.config.ts" in names:framework="Next.js";build="npm install && npm run build";start="npm run start"
+ elif "vite.config.js" in names or "vite.config.ts" in names or "vite.config.mjs" in names:framework="React / Vite";service="static_site";build="npm install && npm run build";publish="dist"
+ elif "angular.json" in names:framework="Angular";service="static_site";build="npm install && npm run build";publish="dist"
+ elif "package.json" in names:framework="Node.js";build="npm install";start="npm start" if "start" in scripts else ("node index.js" if "index.js" in names else "")
+ elif "manage.py" in names:framework="Django";build="pip install -r requirements.txt";start="gunicorn config.wsgi:application"
+ elif "requirements.txt" in names or "pyproject.toml" in names:framework="Python";build="pip install -r requirements.txt" if "requirements.txt" in names else "pip install .";start="uvicorn app.main:app --host 0.0.0.0 --port $PORT" if "main.py" in names else ""
+ elif "index.html" in names:framework="Static HTML";service="static_site";publish="."
+ return {"framework":framework,"service_type":service,"build_command":build,"start_command":start,"publish_directory":publish,"root_directory":"","files":sorted(names)[:100]}
 class GitHubProjectIn(BaseModel):
  name:str=Field(min_length=1,max_length=120)
  repository_full_name:str
  branch:str=Field(min_length=1,max_length=255)
  framework:str="auto"
+ service_type:str="web_service"
+ root_directory:str=""
+ build_command:str=""
+ start_command:str=""
+ publish_directory:str=""
+ region:str="oregon"
+ instance_type:str="starter"
+ auto_deploy:bool=True
+ cron_schedule:str=""
 @app.post("/api/v1/integrations/github/projects",status_code=201)
 def github_import_project(x:GitHubProjectIn,ctx=Depends(current),db:Session=Depends(get_db)):
  if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+",x.repository_full_name):raise HTTPException(422,"Invalid repository name.")
@@ -368,9 +413,9 @@ def github_import_project(x:GitHubProjectIn,ctx=Depends(current),db:Session=Depe
  name=x.name.strip();s=slug(name)
  if db.scalar(select(Project).where(Project.org_id==ctx["org"],Project.slug==s)):s+="-"+secrets.token_hex(2)
  url="https://github.com/"+info["full_name"]
- p=Project(org_id=ctx["org"],name=name,slug=s,framework=x.framework[:60],source_type="github",source_url=url,source_ref=branch)
+ p=Project(org_id=ctx["org"],name=name,slug=s,framework=x.framework[:60],source_type="github",source_url=url,source_ref=branch,service_type=x.service_type,root_directory=x.root_directory[:500],build_command=x.build_command[:1000],start_command=x.start_command[:1000],publish_directory=x.publish_directory[:500],region=x.region[:80],instance_type=x.instance_type[:40],auto_deploy=x.auto_deploy,cron_schedule=x.cron_schedule[:100])
  db.add(p);db.flush();log(db,ctx,"project.github_imported",info["full_name"]+"@"+branch);db.commit();db.refresh(p)
- return {"id":p.id,"name":p.name,"slug":p.slug,"framework":p.framework,"source_type":p.source_type,"source_url":p.source_url,"source_ref":p.source_ref,"created_at":p.created_at,"deployments":0}
+ return {"id":p.id,"name":p.name,"slug":p.slug,"framework":p.framework,"source_type":p.source_type,"source_url":p.source_url,"source_ref":p.source_ref,"service_type":p.service_type,"root_directory":p.root_directory,"build_command":p.build_command,"start_command":p.start_command,"publish_directory":p.publish_directory,"region":p.region,"instance_type":p.instance_type,"auto_deploy":p.auto_deploy,"cron_schedule":p.cron_schedule,"created_at":p.created_at,"deployments":0}
 @app.post("/api/v1/webhooks/github")
 async def github_webhook(request:Request,db:Session=Depends(get_db)):
  secret_value=os.getenv("GITHUB_WEBHOOK_SECRET","")
