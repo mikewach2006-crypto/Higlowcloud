@@ -401,6 +401,10 @@ class GitHubProjectIn(BaseModel):
 @app.post("/api/v1/integrations/github/projects",status_code=201)
 def github_import_project(x:GitHubProjectIn,ctx=Depends(current),db:Session=Depends(get_db)):
  if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+",x.repository_full_name):raise HTTPException(422,"Invalid repository name.")
+ if x.service_type not in {"static_site","web_service","private_service","background_worker","cron_job"}:raise HTTPException(422,"Unsupported service type.")
+ if x.region not in {"oregon","ohio","frankfurt","singapore"}:raise HTTPException(422,"Unsupported deployment region.")
+ if x.instance_type not in {"starter","standard","pro"}:raise HTTPException(422,"Unsupported instance type.")
+
  item=db.scalar(select(GitHubInstallation).where(GitHubInstallation.org_id==ctx["org"]))
  if not item:raise HTTPException(409,"Connect your GitHub account first.")
  token=github_installation_token(item.installation_id)
