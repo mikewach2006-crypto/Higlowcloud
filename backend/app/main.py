@@ -398,7 +398,10 @@ def github_detect(owner:str,repo:str,branch:str="main",service_type:str="web_ser
  elif "angular.json" in names:framework="Angular";service="static_site";build="npm install && npm run build" if "build" in scripts else "npm install";publish="dist"
  elif "package.json" in names:framework="Node.js";build="npm install";start="npm start" if "start" in scripts else ("node index.js" if "index.js" in names else "")
  elif "manage.py" in names:framework="Django";build="pip install -r requirements.txt";start="gunicorn config.wsgi:application"
- elif "requirements.txt" in names or "pyproject.toml" in names:framework="Python";build="pip install -r requirements.txt" if "requirements.txt" in names else "pip install .";start="uvicorn app.main:app --host 0.0.0.0 --port $PORT" if "main.py" in names else ""
+ elif "requirements.txt" in names or "pyproject.toml" in names:
+  framework="FastAPI / Python" if "app" in names or "main.py" in names else "Python"
+  build="pip install -r requirements.txt" if "requirements.txt" in names else "pip install ."
+  start="uvicorn app.main:app --host 0.0.0.0 --port $PORT" if "app" in names else ("uvicorn main:app --host 0.0.0.0 --port $PORT" if "main.py" in names else "")
  elif "index.html" in names:framework="Static HTML";service="static_site";publish="."
  return {"framework":framework,"service_type":service,"build_command":build,"start_command":start,"publish_directory":publish,"root_directory":root_dir,"files":sorted(names)[:100]}
 class GitHubProjectIn(BaseModel):
