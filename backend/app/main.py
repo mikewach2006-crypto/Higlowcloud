@@ -420,6 +420,9 @@ def github_import_project(x:GitHubProjectIn,ctx=Depends(current),db:Session=Depe
  if x.service_type not in {"static_site","web_service","private_service","background_worker","cron_job"}:raise HTTPException(422,"Unsupported service type.")
  if x.region not in {"oregon","ohio","frankfurt","singapore"}:raise HTTPException(422,"Unsupported deployment region.")
  if x.instance_type not in {"starter","standard","pro"}:raise HTTPException(422,"Unsupported instance type.")
+ root=x.root_directory.strip().replace("\\","/").strip("/")
+ if root and (PurePosixPath(root).is_absolute() or ".." in PurePosixPath(root).parts):raise HTTPException(422,"Root directory must be a relative path inside the repository.")
+ if x.service_type=="cron_job" and not x.cron_schedule.strip():raise HTTPException(422,"Cron jobs require a schedule.")
 
  item=db.scalar(select(GitHubInstallation).where(GitHubInstallation.org_id==ctx["org"]))
  if not item:raise HTTPException(409,"Connect your GitHub account first.")
@@ -433,7 +436,7 @@ def github_import_project(x:GitHubProjectIn,ctx=Depends(current),db:Session=Depe
  name=x.name.strip();s=slug(name)
  if db.scalar(select(Project).where(Project.org_id==ctx["org"],Project.slug==s)):s+="-"+secrets.token_hex(2)
  url="https://github.com/"+info["full_name"]
- p=Project(org_id=ctx["org"],name=name,slug=s,framework=x.framework[:60],source_type="github",source_url=url,source_ref=branch,service_type=x.service_type,root_directory=x.root_directory[:500],build_command=x.build_command[:1000],start_command=x.start_command[:1000],publish_directory=x.publish_directory[:500],region=x.region[:80],instance_type=x.instance_type[:40],auto_deploy=x.auto_deploy,cron_schedule=x.cron_schedule[:100])
+ p=Project(org_id=ctx["org"],name=name,slug=s,framework=x.framework[:60],source_type="github",source_url=url,source_ref=branch,service_type=x.service_type,root_directory=root[:500],build_command=x.build_command[:1000],start_command=x.start_command[:1000],publish_directory=x.publish_directory[:500],region=x.region[:80],instance_type=x.instance_type[:40],auto_deploy=x.auto_deploy,cron_schedule=x.cron_schedule[:100])
  db.add(p);db.flush();log(db,ctx,"project.github_imported",info["full_name"]+"@"+branch);db.commit();db.refresh(p)
  return {"id":p.id,"name":p.name,"slug":p.slug,"framework":p.framework,"source_type":p.source_type,"source_url":p.source_url,"source_ref":p.source_ref,"service_type":p.service_type,"root_directory":p.root_directory,"build_command":p.build_command,"start_command":p.start_command,"publish_directory":p.publish_directory,"region":p.region,"instance_type":p.instance_type,"auto_deploy":p.auto_deploy,"cron_schedule":p.cron_schedule,"created_at":p.created_at,"deployments":0}
 @app.post("/api/v1/webhooks/github")
