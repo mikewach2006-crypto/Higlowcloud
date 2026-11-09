@@ -49,6 +49,7 @@ class Project(Base):
  framework:Mapped[str]=mapped_column(String(60),default="auto")
  source_type:Mapped[str]=mapped_column(String(30),default="manual")
  source_url:Mapped[str]=mapped_column(String(1000),nullable=True)
+ source_ref:Mapped[str]=mapped_column(String(255),default="")
  created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=now)
  updated_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=now,onupdate=now)
 class Deployment(Base):
@@ -269,7 +270,7 @@ def me(ctx=Depends(current)):
 # GitHub App integration. Installation credentials are exchanged on demand and never stored.
 def github_app_config():
  app_id=os.getenv("GITHUB_APP_ID","").strip()
- private_key=os.getenv("GITHUB_APP_PRIVATE_KEY","").replace("\\n","\\n").strip()
+ private_key=os.getenv("GITHUB_APP_PRIVATE_KEY","").replace("\\n","\n").strip()
  app_slug=os.getenv("GITHUB_APP_SLUG","higlowcloud").strip()
  if not app_id or not private_key:raise HTTPException(503,"GitHub App is not configured on the API service.")
  return app_id,private_key,app_slug
