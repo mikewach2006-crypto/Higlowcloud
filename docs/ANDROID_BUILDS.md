@@ -56,6 +56,7 @@ The existing Codemagic workflow builds both APKs in one run. The dashboard does 
 - The Codemagic API token stays in Render environment variables and is not exposed to browsers.
 - APK downloads are proxied through HiglowCloud and require an authenticated workspace session. The API generates a five-minute Codemagic artifact URL server-side and fetches it without forwarding the API token to the artifact storage redirect.
 - The browser never receives the raw Codemagic artifact URL or API token.
+- Only workspace owners and admins can start or cancel builds.
 - One active build per workspace and five build requests per rolling 24 hours in this private beta.
 - No additional Render worker, Docker daemon, local Android Studio, or always-on owner PC is required.
 - Build minutes and artifact retention follow the existing Codemagic account plan and limits.
