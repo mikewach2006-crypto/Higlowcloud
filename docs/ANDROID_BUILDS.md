@@ -1,64 +1,66 @@
-# HiglowCloud Android Builds (private beta)
+# HiglowCloud Android Builds — private beta
 
 ## Architecture
 
-The HiglowCloud dashboard and API remain on the existing Render deployment. Android build execution is performed by short-lived GitHub-hosted Linux runners started only when a user requests a build. No always-on worker, local PC, Android Studio installation, Docker socket, or additional Render service is required.
+HiglowCloud is the owner-facing build control plane. The existing Codemagic app is the Android build executor. The existing Render API remains in place and does not compile APKs.
 
 - Dashboard: `/android-builds/`
 - API: `/api/v1/android-builds`
-- Build workflow: `.github/workflows/android-build.yml`
-- Source repository: selected through the connected GitHub App installation.
-- Initial supported source: private GitHub repositories accessible to that installation.
-- Initial targets: `callDebug` and `unifiedDebug`.
-- Artifacts: private GitHub Actions artifacts, retained for 7 days and downloaded through an authenticated HiglowCloud API endpoint.
+- Source: `mikewach2006-crypto/HiglowBiz`, branch `main`
+- Codemagic application ID: `6af6e0a644d39155bd54ea5f`
+- Codemagic workflow key: `nenva-android`
+- Workflow display name: `Nenva Android production release`
+- Outputs: signed unified Nenva APK and signed standalone Nenva Call APK
+- Build machine: existing `mac_mini_m2` selection in `codemagic.yaml`
 
-The build runner checks out source using a short-lived GitHub App installation token scoped to the selected source repository and Contents: read. The checkout step removes Git metadata before Gradle runs. The source build does not receive the GitHub App token or a production signing key. The build runner is destroyed by GitHub after the job.
+HiglowCloud sends a build request to Codemagic, stores the returned build ID in its database, polls build status when the dashboard is open, and streams selected APK artifacts through an authenticated HiglowCloud download endpoint. The long-lived Codemagic API token is stored only in the existing HiglowCloud API Render environment.
 
-## Required GitHub App configuration
+## Existing release signing — reuse, do not replace
 
-The existing HiglowCloud GitHub App must be installed for both:
-- `mikewach2006-crypto/Higlowcloud`
-- `mikewach2006-crypto/HiglowBiz` (or another selected source repository)
+The HiglowBiz repository's existing `codemagic.yaml` already references the Codemagic variable group `nenva_release` and decodes the persistent `NENVA_ANDROID_KEYSTORE_BASE64` into the build VM. It uses these secure variables:
+- `NENVA_ANDROID_KEYSTORE_BASE64`
+- `NENVA_ANDROID_KEYSTORE_PASSWORD`
+- `NENVA_ANDROID_KEY_ALIAS`
+- `NENVA_ANDROID_KEY_PASSWORD`
 
-Required repository permissions:
-- Contents: Read-only
-- Actions: Read and write
+The existing keystore was created as `nenva-release.jks`, with alias `nenva-release`. Do not generate a replacement keystore, change the alias, or copy signing secrets into HiglowCloud, GitHub source, or the Android app. The signing operation stays entirely inside Codemagic.
 
-The app's existing Render API configuration must be present:
-- `GITHUB_APP_ID`
-- `GITHUB_APP_PRIVATE_KEY`
-- `GITHUB_APP_SLUG`
+The same existing Codemagic variable group also contains `GITHUB_TOKEN`, used by the current workflow to publish the Nenva release assets/checksums to the HiglowBiz GitHub repository.
 
-The HiglowCloud API creates installation tokens on demand. Long-lived private keys remain in Render environment variables and are never returned to the browser or placed in the APK.
+A successful build with `apksigner verify` and the existing release key is the final proof that the stored signing material is valid. The dashboard must not claim signing is verified merely because the variable group is referenced.
 
-After changing GitHub App permissions, approve the permission update for the installation and ensure both repositories are selected.
+## One-time Codemagic API connection
 
-## First Nenva Call test
+1. Open [Codemagic account settings](https://codemagic.io/settings).
+2. Create or copy the personal API token.
+3. Open the existing **HiglowCloud API** web service in the [Render dashboard](https://dashboard.render.com/).
+4. In Environment, add `CODEMAGIC_API_TOKEN` with the token value. Do not place the token in a frontend variable, source file, GitHub secret, chat, or APK.
+5. Save and allow the existing Render API service to restart.
+6. Sign in to HiglowCloud and open **Android Builds**. The provider status should change to **Codemagic connected**.
 
-1. Sign in to HiglowCloud.
-2. Open **Android Builds** from the workspace navigation or visit `/android-builds/`.
-3. Connect the HiglowCloud GitHub App if it is not connected.
-4. Select `mikewach2006-crypto/HiglowBiz`, branch `main`, and target **Nenva Call — debug APK**.
-5. Start the build and follow its status. Open the linked GitHub Actions run for full step logs.
-6. Download the private artifact ZIP and extract the APK. Install it on the test Android phone.
+Codemagic REST API authentication uses the `x-auth-token` header. The API token is never returned to the browser. See [Codemagic API overview](https://docs.codemagic.io/rest-api/codemagic-rest-api/).
 
-A debug APK is suitable for internal testing. A debug build may need to be uninstalled before installing a later build if the runner creates a different debug signing key.
+## First signed test
 
-## Free-tier and safety limits
+1. Open HiglowCloud `/android-builds/`.
+2. Click **Build both signed APKs**.
+3. HiglowCloud calls `POST https://api.codemagic.io/builds` with the fixed app ID, workflow key and `main` branch.
+4. Codemagic executes the existing workflow: Android SDK setup, unit tests, signed unified and call release builds, package/permission checks, signature verification, SHA-256 checksums and GitHub release publishing.
+5. HiglowCloud polls Codemagic's build status and exposes two authenticated artifact downloads when the build completes.
+6. Install both APKs on test devices. Verify that updating a previously installed build signed by the same key works without uninstalling it.
 
-- One active platform build at a time.
-- Five builds per rolling 24 hours per workspace.
-- 45-minute workflow timeout.
-- 7-day artifact retention.
-- No public source-code mirrors or public APK releases.
-- No production release signing in this first version.
-- No customer code executes in the HiglowCloud API or Render service.
-- The workflow is restricted to two known Gradle targets; arbitrary shell commands are not accepted.
+The existing Codemagic workflow builds both APKs in one run. The dashboard does not offer a separate debug build path for this release workflow.
 
-GitHub Free currently includes up to 2,000 Actions minutes per month and 500 MB of artifact storage for private repositories. The included quota is not unlimited. Usage above the included allowance may be billed if paid usage is enabled. Set the GitHub Actions spending budget to zero / stop usage at the included limit if the account has a payment method and must not incur charges.
+## Security and launch limits
 
-## Important launch boundary
+- The Codemagic API token stays in Render environment variables and is not exposed to browsers.
+- APK downloads are proxied through HiglowCloud and require an authenticated workspace session.
+- The browser never receives the raw Codemagic artifact URL or API token.
+- One active build per workspace and five build requests per rolling 24 hours in this private beta.
+- No additional Render worker, Docker daemon, local Android Studio, or always-on owner PC is required.
+- Build minutes and artifact retention follow the existing Codemagic account plan and limits.
+- The current Codemagic workflow also publishes GitHub release assets. Repository/release visibility still governs those GitHub assets; the HiglowCloud authenticated proxy is a separate download path.
 
-This is an owner-only private beta foundation, not yet a public multi-tenant build service. Before inviting other developers, add verified account onboarding, per-user abuse controls, stronger audit events, artifact integrity verification, a durable release-signing workflow, and an independent security review.
+## Production readiness
 
-The existing Render deployment and its hosting/deployment routes are not replaced or modified by this build workflow.
+Do not invite external developers until the first successful build is verified, the exact signing certificate fingerprint is recorded, install/update behavior is tested on physical devices, Codemagic usage limits are understood, and the workspace's multi-tenant abuse controls and audit trail have been reviewed.
