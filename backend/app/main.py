@@ -802,7 +802,7 @@ def sync_android_builds(rows,installation,db):
   runs=data.get("workflow_runs",[])
   for build in rows:
    if build.status not in {"queued","running"}:continue
-   match=next((r for r in runs if build.id in str(r.get("display_title",""))),None)
+   match=next((r for r in runs if build.id in str(r.get("display_title","")) and (not build.run_id or str(r.get("id"))==build.run_id)),None)
    if not match:continue
    build.run_id=str(match.get("id") or build.run_id or "") or None
    build.run_url=match.get("html_url") or build.run_url or ""
@@ -878,6 +878,8 @@ def claim_android_build(x:AndroidBuildClaim,db:Session=Depends(get_db)):
  installed=android_build_installation(db,build.org_id)
  token,run=verify_android_build_run(build,x.run_id,installed.installation_id)
  if run.get("status")!="in_progress":raise HTTPException(409,"The GitHub Actions runner is not active yet.")
+ if build.run_id and build.run_id!=x.run_id:
+  raise HTTPException(409,"A different GitHub Actions run is already assigned to this build.")
  if build.status!="queued":
   if build.run_id==x.run_id and build.status=="running":
    raise HTTPException(409,"This Android build is already claimed.")
