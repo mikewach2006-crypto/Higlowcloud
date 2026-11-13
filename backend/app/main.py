@@ -161,7 +161,7 @@ class AndroidBuild(Base):
  run_url:Mapped[str]=mapped_column(String(1000),default="")
  artifact_id:Mapped[str]=mapped_column(String(40),nullable=True)
  artifact_name:Mapped[str]=mapped_column(String(255),default="")
- logs:Mapped[str]=mapped_column(Text,default="Build request accepted; waiting for a GitHub-hosted runner.")
+ logs:Mapped[str]=mapped_column(Text,default="Build request accepted; waiting for Codemagic.")
  error:Mapped[str]=mapped_column(String(1000),default="")
  created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=now)
  started_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=True)
