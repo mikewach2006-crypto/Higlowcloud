@@ -788,7 +788,7 @@ def verify_android_build_run(build,run_id,installation_id):
  token=github_installation_token(installation_id)
  run=github_api("/repos/"+ANDROID_BUILD_REPOSITORY+"/actions/runs/"+str(run_id),token=token)
  repository=(run.get("repository") or {}).get("full_name","").lower()
- if run.get("path")!=ANDROID_BUILD_WORKFLOW or run.get("event")!="workflow_dispatch" or repository!=ANDROID_BUILD_REPOSITORY.lower() or build.id not in str(run.get("display_title","")):
+ if str(run.get("path","")).split("@",1)[0]!=ANDROID_BUILD_WORKFLOW or run.get("event")!="workflow_dispatch" or repository!=ANDROID_BUILD_REPOSITORY.lower() or build.id not in str(run.get("display_title","")):
   raise HTTPException(403,"This GitHub Actions run is not an authorised HiglowCloud Android build.")
  if run.get("status") not in {"queued","in_progress","completed"}:
   raise HTTPException(409,"The GitHub Actions run is not active.")
@@ -806,7 +806,8 @@ def sync_android_builds(rows,installation,db):
    if not match:continue
    build.run_id=str(match.get("id") or build.run_id or "") or None
    build.run_url=match.get("html_url") or build.run_url or ""
-   if match.get("status")=="in_progress":build.status="running"
+   # Keep the database row queued until the authenticated claim endpoint marks it running.
+   # This avoids a race where the dashboard poll could claim the job before the runner does.
    if match.get("status")=="completed":
     if match.get("conclusion")=="success":
      artifacts=github_api("/repos/"+ANDROID_BUILD_REPOSITORY+"/actions/runs/"+str(match["id"])+"/artifacts?per_page=100",token=token).get("artifacts",[])
