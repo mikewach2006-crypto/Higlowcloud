@@ -929,5 +929,6 @@ def cancel_android_build(build_id:str,ctx=Depends(current),db:Session=Depends(ge
  token=codemagic_config()
  codemagic_request("https://api.codemagic.io/builds/"+urllib.parse.quote(build.run_id,safe="")+"/cancel",token,method="POST")
  build.status="failed";build.error="Build canceled from HiglowCloud.";build.finished_at=now();build.logs=build.error
+ log(db,ctx,"android_build.cancelled",build.run_id)
  db.commit()
  return {"success":True,"build":android_build_dict(build)}
