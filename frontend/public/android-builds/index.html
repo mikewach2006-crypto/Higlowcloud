@@ -33,7 +33,7 @@ button:disabled{opacity:.45;cursor:not-allowed}.notice{padding:12px 14px;border:
 <div id="loginNotice" class="notice hidden">Sign in to your HiglowCloud workspace first. <a href="/">Open HiglowCloud</a>.</div>
 <section id="setup" class="panel hidden" style="margin-top:14px">
  <h2>Connect your Codemagic account</h2>
- <p class="muted">The signing keystore is already stored in Codemagic's <span class="code">nenva_release</span> variable group. Do not upload it again or create a replacement key.</p>
+ <p class="muted">Your existing signing keystore is already stored in Codemagic's <span class="code">nenva_release</span> variable group. Do not upload it again or create a replacement key. The first successful release build will verify that the key is usable.</p>
  <ol class="steps"><li>Open <a href="https://codemagic.io/settings" target="_blank" rel="noreferrer">Codemagic account settings</a> and create or copy your API token.</li><li>Open the <a href="https://dashboard.render.com/" target="_blank" rel="noreferrer">Render dashboard</a>, select the existing <b>HiglowCloud API</b> web service, then open Environment.</li><li>Add <span class="code">CODEMAGIC_API_TOKEN</span> with the token as its secret value and save the changes.</li><li>Wait for the existing API service to restart, then refresh this page.</li></ol>
  <p class="foot">Never paste the token into this page, GitHub source code, or a chat message. Keep it only in the HiglowCloud API's Render environment.</p>
 </section>
@@ -56,8 +56,8 @@ async function load(){
  if(!token){el('loginNotice').classList.remove('hidden');el('provider').textContent='Sign in required';return;}
  try{
   const state=await api('/android-builds/status');
-  el('provider').textContent=state.status==='ready'?'Codemagic connected':'Setup required';
-  el('signing').textContent='nenva_release · existing key';
+  el('provider').textContent=state.status==='ready'?'API token configured':'Setup required';
+  el('signing').textContent='Existing key · verification pending';
   el('buildButton').disabled=state.status!=='ready';
   el('setup').classList.toggle('hidden',state.status==='ready');
   el('quota').textContent=state.note||'Private beta';
