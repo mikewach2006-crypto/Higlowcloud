@@ -899,7 +899,13 @@ def download_android_build(build_id:str,kind:str,ctx=Depends(current),db:Session
  artifacts=codemagic_artifacts(build.run_id,token)
  artifact=next((a for a in artifacts if a["name"].lower().endswith(expected)),None)
  if not artifact:raise HTTPException(404,"The requested signed APK was not found in Codemagic artifacts. Open the build logs to inspect the artifact list.")
- req=urllib.request.Request(artifact["url"],headers={"x-auth-token":token,"Accept":"application/octet-stream","User-Agent":"HiglowCloud-Android-Builds"})
+ public=codemagic_request(artifact["url"]+"/public-url",token,method="POST",body={"expiresAt":int(time.time())+300})
+ download_url=public.get("url","")
+ if not isinstance(download_url,str) or not download_url.startswith("https://api.codemagic.io/artifacts/"):
+  raise HTTPException(502,"Codemagic did not return a valid temporary APK download URL.")
+ # The short-lived URL is fetched without the API token so credentials are never
+ # forwarded to Codemagic's artifact storage redirect/CDN.
+ req=urllib.request.Request(download_url,headers={"Accept":"application/octet-stream","User-Agent":"HiglowCloud-Android-Builds"})
  try:upstream=urllib.request.urlopen(req,timeout=90)
  except urllib.error.HTTPError as exc:raise HTTPException(502,"Codemagic artifact download failed with HTTP "+str(exc.code)+".")
  def stream_artifact():
