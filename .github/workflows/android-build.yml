@@ -1,5 +1,5 @@
 name: HiglowCloud Android build
-run-name: HiglowCloud Android build #${{ inputs.build_id }}
+run-name: "HiglowCloud Android build #${{ inputs.build_id }}"
 
 on:
   workflow_dispatch:
@@ -74,7 +74,7 @@ jobs:
         if: steps.claim.outputs.claimed == 'true'
         shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null
+          yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
       - name: Set up Gradle 8.13
