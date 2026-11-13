@@ -41,3 +41,17 @@ Requires a platform-admin account provisioned through ADMIN_EMAILS:
 - GET /status
 
 The API currently queues deployments and resource requests. It does not yet provision application runtimes, edge routing or managed databases.
+
+
+
+## Android build workspace (Codemagic)
+
+Requires an authenticated HiglowCloud session:
+- GET `/android-builds/status` — Codemagic connection and fixed workflow configuration status.
+- GET `/android-builds` — workspace build history and refreshed Codemagic statuses.
+- POST `/android-builds` — queue both signed Android APKs using the existing Codemagic workflow.
+- GET `/android-builds/{build_id}/download/call` — authenticated standalone Nenva Call APK download.
+- GET `/android-builds/{build_id}/download/unified` — authenticated unified Nenva APK download.
+- POST `/android-builds/{build_id}/cancel` — cancel an active Codemagic build.
+
+The API requires `CODEMAGIC_API_TOKEN` in the server-side Render environment. The Codemagic app ID and workflow key are fixed to the existing HiglowBiz project and `nenva-android` workflow. The Codemagic API token is never sent to the browser.

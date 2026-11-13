@@ -36,3 +36,10 @@ Frontend:
 
 ## Production launch blockers
 Before accepting customers, implement and test email verification, password reset, MFA, workspace invitations/RBAC, signed worker jobs, isolated builders and runtime sandboxes, persistent object storage, TLS edge routing, managed database provisioning, metering/billing, backups, abuse controls and security monitoring.
+
+
+## Android builds (private beta)
+
+HiglowCloud delegates Android compilation and persistent release signing to the existing Codemagic app. The private workspace at `/android-builds/` queues builds, tracks Codemagic status, and proxies signed Nenva Call and unified Nenva APK downloads. See [docs/ANDROID_BUILDS.md](docs/ANDROID_BUILDS.md) for the one-time API-token connection and the existing `nenva_release` signing setup.
+
+This integration does not replace the existing Render services or HiglowBiz API.
