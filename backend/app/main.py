@@ -788,7 +788,7 @@ def verify_android_build_run(build,run_id,installation_id):
  token=github_installation_token(installation_id)
  run=github_api("/repos/"+ANDROID_BUILD_REPOSITORY+"/actions/runs/"+str(run_id),token=token)
  repository=(run.get("repository") or {}).get("full_name","").lower()
- if run.get("path")!=ANDROID_BUILD_WORKFLOW or run.get("event")!="workflow_dispatch" or repository!=ANDROID_BUILD_REPOSITORY.lower():
+ if run.get("path")!=ANDROID_BUILD_WORKFLOW or run.get("event")!="workflow_dispatch" or repository!=ANDROID_BUILD_REPOSITORY.lower() or build.id not in str(run.get("display_title","")):
   raise HTTPException(403,"This GitHub Actions run is not an authorised HiglowCloud Android build.")
  if run.get("status") not in {"queued","in_progress","completed"}:
   raise HTTPException(409,"The GitHub Actions run is not active.")
@@ -876,6 +876,7 @@ def claim_android_build(x:AndroidBuildClaim,db:Session=Depends(get_db)):
  if not build:raise HTTPException(404,"Android build request not found.")
  installed=android_build_installation(db,build.org_id)
  token,run=verify_android_build_run(build,x.run_id,installed.installation_id)
+ if run.get("status")!="in_progress":raise HTTPException(409,"The GitHub Actions runner is not active yet.")
  if build.status!="queued":
   if build.run_id==x.run_id and build.status=="running":
    raise HTTPException(409,"This Android build is already claimed.")
