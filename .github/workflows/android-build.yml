@@ -50,12 +50,12 @@ jobs:
               "clone", "--depth", "1", "--branch", branch,
               "https://github.com/" + repository + ".git", "source",
           ]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write("claimed=true\\n")
+              output.write("target=" + build["target"] + "\\n")
+              output.write("build_id=" + build["id"] + "\\n")
           subprocess.run(command, check=True, capture_output=True, text=True, timeout=300)
           shutil.rmtree("source/.git", ignore_errors=True)
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write("claimed=true\n")
-              output.write("target=" + build["target"] + "\n")
-              output.write("build_id=" + build["id"] + "\n")
           print("Private source checkout completed. Short-lived repository credentials were discarded.")
           PY
 
