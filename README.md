@@ -40,8 +40,6 @@ Before accepting customers, implement and test email verification, password rese
 
 ## Android builds (private beta)
 
-HiglowCloud includes an on-demand Android build workspace at `/android-builds/`. Build jobs run on temporary GitHub-hosted Linux runners; they do not execute inside the Render API and do not require an always-on worker or the owner's computer.
+HiglowCloud delegates Android compilation and persistent release signing to the existing Codemagic app. The private workspace at `/android-builds/` queues builds, tracks Codemagic status, and proxies signed Nenva Call and unified Nenva APK downloads. See [docs/ANDROID_BUILDS.md](docs/ANDROID_BUILDS.md) for the one-time API-token connection and the existing `nenva_release` signing setup.
 
-The first supported targets are Nenva Call and unified Nenva debug APKs. Builds and artifacts stay private, artifacts expire after seven days, and the initial beta allows one platform build at a time. See [docs/ANDROID_BUILDS.md](docs/ANDROID_BUILDS.md) for GitHub App permissions, setup, limits and the first Nenva Call test.
-
-This Android CI feature does not activate the separate web deployment runtime, custom-domain edge, or managed database provisioners described in the infrastructure roadmap.
+This integration does not replace the existing Render services or HiglowBiz API.
