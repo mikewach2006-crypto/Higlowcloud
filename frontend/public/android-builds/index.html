@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#17191b"><title>Android Builds — HiglowCloud</title>
+<style>
+:root{color-scheme:dark;--bg:#151719;--panel:#202326;--panel2:#191c1f;--line:#383e42;--cream:#fff9eb;--muted:#aeb4b8;--gold:#c59a50;--green:#86c8a0;--red:#e28c82}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--cream);font:15px/1.5 Inter,system-ui,Segoe UI,sans-serif}
+a{color:#e5bd78;text-decoration:none}button,input,select{font:inherit}button{cursor:pointer}
+.wrap{max-width:1120px;margin:auto;padding:28px 20px 64px}.top{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line);padding-bottom:18px;gap:16px}
+.brand{display:flex;align-items:center;gap:12px}.mark{width:40px;height:40px;border:1px solid var(--gold);border-radius:11px;background:#3b2417;color:var(--gold);display:grid;place-items:center;font-weight:800;font-size:21px}
+.brand small{display:block;color:var(--muted);font-size:10px;letter-spacing:1.5px}.toplinks{display:flex;align-items:center;gap:16px}
+.hero{padding:38px 0 20px;max-width:780px}.eyebrow{color:var(--gold);font-size:11px;letter-spacing:1.7px;font-weight:800}.hero h1{font-size:clamp(32px,5vw,48px);line-height:1.06;letter-spacing:-1.5px;margin:9px 0}.hero p,.muted{color:var(--muted)}
+.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.metric,.panel{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:17px}.metric small{color:var(--muted)}.metric strong{display:block;font-size:20px;margin-top:5px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:13px;margin-top:14px}.panel h2{font-size:17px;margin:0 0 14px}.field{display:grid;gap:6px;margin:12px 0}.field label{font-size:13px;color:#d7d0c4}.field input,.field select{width:100%;background:#111416;border:1px solid #454c50;color:var(--cream);padding:11px 12px;border-radius:8px;min-height:43px}
+button.primary{background:var(--gold);color:#21170d;border:1px solid #a47b3d;border-radius:8px;padding:11px 15px;font-weight:750}button.secondary{background:#292e31;color:var(--cream);border:1px solid #4a5156;border-radius:8px;padding:9px 13px}
+button:disabled{opacity:.45;cursor:not-allowed}.notice{padding:12px 14px;border:1px solid #69532f;background:#2b2419;color:#f0d8ad;border-radius:10px;margin:14px 0}.notice.error{border-color:#70413c;background:#2b1d1b;color:#f0b3aa}.hidden{display:none!important}
+.list{display:grid;gap:10px}.job{border:1px solid var(--line);background:var(--panel2);border-radius:10px;padding:13px}.jobhead{display:flex;justify-content:space-between;gap:10px;align-items:center}.status{font-size:11px;text-transform:uppercase;letter-spacing:.6px;border:1px solid var(--line);border-radius:20px;padding:3px 9px;color:var(--muted)}.status.succeeded{color:var(--green);border-color:#426b54}.status.failed{color:var(--red);border-color:#70413c}.status.running{color:#e8c47e;border-color:#69532f}
+.jobmeta{color:var(--muted);font-size:12px;margin-top:6px;overflow-wrap:anywhere}.jobactions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:11px}.empty{padding:22px;text-align:center;color:var(--muted);border:1px dashed var(--line);border-radius:9px}.foot{font-size:12px;color:var(--muted);margin-top:20px}
+@media(max-width:700px){.grid{grid-template-columns:1fr}.metrics{grid-template-columns:1fr}.top{align-items:flex-start}.toplinks{gap:9px;flex-wrap:wrap;justify-content:flex-end}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="top">
+ <div class="brand"><div class="mark">H</div><div><b>HiglowCloud</b><small>ANDROID BUILD WORKSPACE</small></div></div>
+ <div class="toplinks"><a href="/">Workspace</a><button class="secondary" id="refresh">Refresh</button></div>
+</header>
+<section class="hero"><div class="eyebrow">BUILD · TEST · DOWNLOAD</div><h1>Build Nenva in the cloud.</h1><p>Start a private Android build from your GitHub repository. HiglowCloud launches an isolated, temporary Linux runner only when a build is requested. Your computer does not need to stay online.</p></section>
+<div class="metrics">
+ <div class="metric"><small>Build runner</small><strong id="runner">Checking…</strong></div>
+ <div class="metric"><small>Execution model</small><strong>On demand</strong></div>
+ <div class="metric"><small>Artifact retention</small><strong>7 days</strong></div>
+</div>
+<div id="message" class="notice hidden"></div>
+<div id="loginNotice" class="notice hidden">Sign in to your HiglowCloud workspace first. <a href="/">Open HiglowCloud</a>.</div>
+<div class="grid">
+ <section class="panel">
+  <h2>GitHub source</h2>
+  <div id="githubState" class="muted">Checking GitHub connection…</div>
+  <div class="field"><label for="repo">Private repository</label><select id="repo"><option value="">Connect GitHub first</option></select></div>
+  <div class="field"><label for="branch">Branch</label><select id="branch" disabled><option value="">Choose a repository first</option></select></div>
+  <button class="secondary" id="connect">Connect / refresh GitHub</button>
+  <p class="foot">The HiglowCloud GitHub App must have access to both HiglowCloud and your source repository. Private source code stays private.</p>
+ </section>
+ <section class="panel">
+  <h2>Start an Android build</h2>
+  <form id="buildForm">
+   <div class="field"><label for="target">Build target</label><select id="target"><option value="callDebug">Nenva Call — debug APK (installable test build)</option><option value="unifiedDebug">Nenva Android — debug APK</option></select></div>
+   <button class="primary" id="buildButton" type="submit">Start build</button>
+  </form>
+  <p class="foot">The first test build is debug-signed. Release signing and Play Store publishing are separate steps; no production signing key is placed in the build job.</p>
+ </section>
+</div>
+<section class="panel" style="margin-top:14px"><div class="jobhead"><h2 style="margin:0">Build history</h2><span class="muted" id="quota">Private beta · one build at a time</span></div><div id="jobs" class="list" style="margin-top:13px"><div class="empty">Your builds will appear here.</div></div></section>
+<div class="foot">Private beta. Builds use GitHub-hosted runners and your GitHub account's included Actions allowance. GitHub Free currently includes up to 2,000 minutes and 500 MB of artifact storage for private repositories; usage beyond included limits may be billable. Keep this workspace restricted while testing.</div>
+</div>
+<script>
+const API='https://higlowcloud-api.onrender.com/api/v1';
+const token=localStorage.getItem('higlowcloud_token')||'';
+const el=id=>document.getElementById(id);
+let repositories=[];
+function escapeHtml(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function message(text,error=false){el('message').textContent=text;el('message').classList.toggle('hidden',!text);el('message').classList.toggle('error',error);}
+async function api(path,options={}){const headers={Authorization:'Bearer '+token,...(options.headers||{})};if(options.body)headers['Content-Type']='application/json';const response=await fetch(API+path,{...options,headers});const data=await response.json().catch(()=>({detail:'The API returned an invalid response.'}));if(!response.ok)throw new Error(data.detail||'Request failed');return data;}
+async function connect(){try{const data=await api('/integrations/github/connect',{method:'POST',body:'{}'});location.assign(data.url);}catch(error){message(error.message,true);}}
+async function loadBranches(){const full=el('repo').value;el('branch').innerHTML='<option value="">Loading branches…</option>';el('branch').disabled=true;if(!full)return;const [owner,name]=full.split('/');try{const rows=await api('/integrations/github/repositories/'+encodeURIComponent(owner)+'/'+encodeURIComponent(name)+'/branches');el('branch').innerHTML=rows.map(x=>'<option value="'+escapeHtml(x.name)+'">'+escapeHtml(x.name)+'</option>').join('');el('branch').disabled=!rows.length;}catch(error){message(error.message,true);}}
+async function loadRepos(){if(!token){el('loginNotice').classList.remove('hidden');return;}try{const state=await api('/integrations/github/status');el('githubState').textContent=state.connected?'Connected as '+state.account:'GitHub is not connected yet.';if(!state.connected){el('repo').innerHTML='<option value="">Connect GitHub first</option>';return;}repositories=await api('/integrations/github/repositories');el('repo').innerHTML='<option value="">Choose a repository…</option>'+repositories.map(x=>'<option value="'+escapeHtml(x.full_name)+'">'+escapeHtml(x.full_name)+(x.private?' · Private':'')+'</option>').join('');const params=new URLSearchParams(location.search);if(params.get('github')==='connected'&&repositories.length){const preferred=repositories.find(x=>x.full_name.toLowerCase()==='mikewach2006-crypto/higlowbiz');if(preferred){el('repo').value=preferred.full_name;await loadBranches();}history.replaceState({},'',location.pathname);}}catch(error){message(error.message,true);}}
+async function load(){if(!token){el('loginNotice').classList.remove('hidden');el('runner').textContent='Sign in required';return;}try{const state=await api('/android-builds/status');el('runner').textContent=state.status==='ready'?'Ready':'Setup required';el('quota').textContent=state.note||'Private beta · one build at a time';}catch(error){el('runner').textContent='Check setup';message(error.message,true);}try{const data=await api('/android-builds');const jobs=data.builds||[];el('jobs').innerHTML=jobs.length?jobs.map(job=>'<div class="job"><div class="jobhead"><b>'+escapeHtml(job.repository)+' · '+escapeHtml(job.target)+'</b><span class="status '+escapeHtml(job.status)+'">'+escapeHtml(job.status)+'</span></div><div class="jobmeta">Branch: '+escapeHtml(job.branch)+' · Created: '+escapeHtml(job.created_at||'')+'</div><div class="jobmeta">'+escapeHtml(job.logs||'')+'</div>'+(job.error?'<div class="jobmeta">'+escapeHtml(job.error)+'</div>':'')+'<div class="jobactions">'+(job.status==='succeeded'&&job.artifact_id?'<button class="primary" data-download="'+escapeHtml(job.id)+'">Download APK package</button>':'')+(job.run_url?'<a href="'+escapeHtml(job.run_url)+'" target="_blank" rel="noreferrer">View build logs on GitHub</a>':'')+'</div></div>').join(''):'<div class="empty">No Android builds yet. Connect your repository and start the first build.</div>';}catch(error){message(error.message,true);}}
+el('connect').onclick=connect;
+el('repo').onchange=loadBranches;
+el('refresh').onclick=async()=>{await loadRepos();await load();};
+el('buildForm').onsubmit=async event=>{event.preventDefault();if(!el('repo').value||!el('branch').value){message('Choose a repository and branch first.',true);return;}el('buildButton').disabled=true;el('buildButton').textContent='Queueing…';try{await api('/android-builds',{method:'POST',body:JSON.stringify({repository:el('repo').value,branch:el('branch').value,target:el('target').value})});message('Build accepted. HiglowCloud is starting an isolated runner.');await load();}catch(error){message(error.message,true);}finally{el('buildButton').disabled=false;el('buildButton').textContent='Start build';}};
+el('jobs').onclick=async event=>{const button=event.target.closest('[data-download]');if(!button)return;button.disabled=true;try{const response=await fetch(API+'/android-builds/'+encodeURIComponent(button.dataset.download)+'/download',{headers:{Authorization:'Bearer '+token}});if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.detail||'Download failed');}const blob=await response.blob();const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download='Nenva-Android-build.zip';link.click();setTimeout(()=>URL.revokeObjectURL(url),30000);}catch(error){message(error.message,true);}finally{button.disabled=false;}};
+(async()=>{await loadRepos();await load();setInterval(load,15000);})();
+</script>
+</body></html>
