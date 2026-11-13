@@ -752,26 +752,57 @@ def disable(uid:int,ctx=Depends(platform_admin),db:Session=Depends(get_db)):
  if u.id==ctx["user"].id:raise HTTPException(400,"Cannot disable your own account.")
  u.active=False;db.commit();return {"ok":True}
 
-# On-demand Android CI. Build execution runs on a temporary GitHub-hosted runner,
-# never inside this public API process or the existing Render web service.
-ANDROID_BUILD_REPOSITORY="mikewach2006-crypto/Higlowcloud"
-ANDROID_BUILD_WORKFLOW=".github/workflows/android-build.yml"
-ANDROID_BUILD_TARGETS={"callDebug","unifiedDebug"}
+# HiglowCloud delegates Android compilation and release signing to the user's
+# existing Codemagic app. Render remains the control plane; it never builds APKs.
+CODEMAGIC_APP_ID="6af6e0a644d39155bd54ea5f"
+CODEMAGIC_WORKFLOW_ID="nenva-android"
+CODEMAGIC_BRANCH="main"
+CODEMAGIC_ACTIVE={"initializing","queued","waiting","preparing","fetching","testing","building","publishing","finishing"}
+CODEMAGIC_FAILED={"failed","canceled","timeout","skipped"}
 
 class AndroidBuildCreate(BaseModel):
- repository:str=Field(pattern=r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
- branch:str=Field(min_length=1,max_length=200,pattern=r"^[A-Za-z0-9._/-]{1,200}$")
- target:str=Field(pattern=r"^(callDebug|unifiedDebug)$")
+ target:str=Field(default="both",pattern=r"^both$")
 
-class AndroidBuildClaim(BaseModel):
- build_id:str=Field(min_length=36,max_length=36)
- run_id:str=Field(min_length=1,max_length=30,pattern=r"^[0-9]+$")
+def codemagic_config():
+ token=os.getenv("CODEMAGIC_API_TOKEN","").strip()
+ if len(token)<20:
+  raise HTTPException(503,"Codemagic is not connected yet. Add CODEMAGIC_API_TOKEN to the HiglowCloud API environment in Render.")
+ return token
 
-class AndroidBuildComplete(BaseModel):
- build_id:str=Field(min_length=36,max_length=36)
- run_id:str=Field(min_length=1,max_length=30,pattern=r"^[0-9]+$")
- status:str=Field(pattern=r"^(succeeded|failed)$")
- error:str=Field(default="",max_length=1000)
+def codemagic_request(url,token,method="GET",body=None):
+ headers={"Accept":"application/json","x-auth-token":token,"User-Agent":"HiglowCloud-Android-Builds"}
+ data=json.dumps(body).encode() if body is not None else None
+ if data is not None:headers["Content-Type"]="application/json"
+ req=urllib.request.Request(url,data=data,headers=headers,method=method)
+ try:
+  with urllib.request.urlopen(req,timeout=35) as response:
+   raw=response.read().decode(errors="replace")
+   return json.loads(raw) if raw else {}
+ except urllib.error.HTTPError as exc:
+  detail=exc.read(500).decode(errors="replace")
+  if exc.code in {401,403}:raise HTTPException(502,"Codemagic rejected the API token. Check CODEMAGIC_API_TOKEN in Render.")
+  if exc.code==429:raise HTTPException(429,"Codemagic rate limit reached. Wait before starting another build.")
+  raise HTTPException(502,"Codemagic API returned HTTP "+str(exc.code)+": "+detail[:250])
+ except HTTPException:raise
+ except Exception:
+  raise HTTPException(502,"Could not reach Codemagic. Try again shortly.")
+
+def codemagic_build_status(build_id,token):
+ result=codemagic_request("https://codemagic.io/api/v3/builds/"+urllib.parse.quote(build_id,safe=""),token)
+ return result.get("data") or result.get("build") or result
+
+def codemagic_artifacts(build_id,token):
+ result=codemagic_request("https://api.codemagic.io/builds/"+urllib.parse.quote(build_id,safe=""),token)
+ payload=result.get("build") or result.get("data") or result
+ items=payload.get("artefacts") or payload.get("artifacts") or []
+ output=[]
+ for item in items if isinstance(items,list) else []:
+  if not isinstance(item,dict):continue
+  url=item.get("url") or item.get("downloadUrl") or item.get("download_url")
+  name=item.get("name") or item.get("fileName") or item.get("filename") or (url.rsplit("/",1)[-1] if isinstance(url,str) else "")
+  if isinstance(url,str) and url.startswith("https://api.codemagic.io/artifacts/") and name:
+   output.append({"name":name,"url":url})
+ return output
 
 def android_build_dict(x):
  return {"id":x.id,"repository":x.repository,"branch":x.branch,"target":x.target,"status":x.status,
@@ -779,164 +810,116 @@ def android_build_dict(x):
   "logs":(x.logs or "")[-12000:],"error":x.error or "","created_at":x.created_at,
   "started_at":x.started_at,"finished_at":x.finished_at}
 
-def android_build_installation(db,org_id):
- item=db.scalar(select(GitHubInstallation).where(GitHubInstallation.org_id==org_id))
- if not item:raise HTTPException(409,"Connect the HiglowCloud GitHub App before starting an Android build.")
- return item
-
-def verify_android_build_run(build,run_id,installation_id):
- token=github_installation_token(installation_id)
- run=github_api("/repos/"+ANDROID_BUILD_REPOSITORY+"/actions/runs/"+str(run_id),token=token)
- repository=(run.get("repository") or {}).get("full_name","").lower()
- if str(run.get("path","")).split("@",1)[0]!=ANDROID_BUILD_WORKFLOW or run.get("event")!="workflow_dispatch" or repository!=ANDROID_BUILD_REPOSITORY.lower() or build.id not in str(run.get("display_title","")):
-  raise HTTPException(403,"This GitHub Actions run is not an authorised HiglowCloud Android build.")
- if run.get("status") not in {"queued","in_progress","completed"}:
-  raise HTTPException(409,"The GitHub Actions run is not active.")
- return token,run
-
-def sync_android_builds(rows,installation,db):
- if not rows or not installation:return
- try:
-  token=github_installation_token(installation.installation_id)
-  data=github_api("/repos/"+ANDROID_BUILD_REPOSITORY+"/actions/workflows/android-build.yml/runs?event=workflow_dispatch&branch=main&per_page=50",token=token)
-  runs=data.get("workflow_runs",[])
-  for build in rows:
-   if build.status not in {"queued","running"}:continue
-   match=next((r for r in runs if build.id in str(r.get("display_title","")) and (not build.run_id or str(r.get("id"))==build.run_id)),None)
-   if not match:continue
-   build.run_id=str(match.get("id") or build.run_id or "") or None
-   build.run_url=match.get("html_url") or build.run_url or ""
-   # Keep the database row queued until the authenticated claim endpoint marks it running.
-   # This avoids a race where the dashboard poll could claim the job before the runner does.
-   if match.get("status")=="completed":
-    if match.get("conclusion")=="success":
-     artifacts=github_api("/repos/"+ANDROID_BUILD_REPOSITORY+"/actions/runs/"+str(match["id"])+"/artifacts?per_page=100",token=token).get("artifacts",[])
-     artifact=next((a for a in artifacts if a.get("name")=="higlowcloud-android-"+build.id and not a.get("expired")),None)
-     if artifact:
-      build.status="succeeded";build.artifact_id=str(artifact["id"]);build.artifact_name=artifact.get("name","")
-      build.logs=(build.logs or "")+"\nGitHub Actions completed successfully; private APK artifact is ready."
-     else:
-      build.status="failed";build.error="GitHub Actions completed, but the private APK artifact was not found."
-    else:
-     build.status="failed";build.error="GitHub Actions ended with conclusion: "+str(match.get("conclusion") or "unknown")
-    build.finished_at=now()
-  db.commit()
- except Exception:
-  db.rollback()
+def sync_android_builds(rows,token,db):
+ changed=False
+ for build in rows:
+  if build.status not in {"queued","running"} or not build.run_id:continue
+  try:
+   info=codemagic_build_status(build.run_id,token)
+   status=str(info.get("status") or "").lower()
+   if status in CODEMAGIC_ACTIVE:
+    if build.status!="running":build.status="running"
+    build.logs="Codemagic status: "+status+". Open the Codemagic build page for live step logs."
+    changed=True
+   elif status=="finished":
+    build.status="succeeded";build.finished_at=now();build.error=""
+    try:
+     artifacts=codemagic_artifacts(build.run_id,token)
+     names=[a["name"] for a in artifacts]
+     build.artifact_id="available" if artifacts else None
+     build.artifact_name="; ".join(names)[:255]
+     build.logs="Codemagic completed successfully. Signed APK artifacts: "+(", ".join(names) if names else "artifact list not returned yet.")
+    except HTTPException:
+     build.artifact_id=None
+     build.logs="Codemagic completed successfully. Artifact list will be checked again when you download."
+    changed=True
+   elif status in CODEMAGIC_FAILED:
+    build.status="failed";build.finished_at=now()
+    build.error="Codemagic build ended with status: "+(status or "unknown")
+    build.logs=build.error
+    changed=True
+  except HTTPException as exc:
+   build.logs="Waiting for Codemagic status. "+str(exc.detail)[:300]
+ if changed:db.commit()
 
 @app.get("/api/v1/android-builds/status")
-def android_build_status(ctx=Depends(current),db:Session=Depends(get_db)):
- installed=db.scalar(select(GitHubInstallation).where(GitHubInstallation.org_id==ctx["org"]))
- configured=bool(os.getenv("GITHUB_APP_ID","").strip() and os.getenv("GITHUB_APP_PRIVATE_KEY","").strip())
- ready=configured and bool(installed)
- return {"provider":"GitHub Actions","runner":"temporary GitHub-hosted Linux runner",
-  "status":"ready" if ready else "setup_required","github_connected":bool(installed),
-  "note":"Private beta · one platform build at a time · 5 builds per workspace per rolling 24 hours · APK artifacts expire after 7 days.",
-  "setup_hint":None if ready else "Configure the HiglowCloud GitHub App in Render and connect it from the workspace. The app needs Contents: read and Actions: read/write permissions."}
+def android_build_status(ctx=Depends(current)):
+ configured=bool(os.getenv("CODEMAGIC_API_TOKEN","").strip())
+ return {"provider":"Codemagic","app":"HiglowBiz","app_id":CODEMAGIC_APP_ID,
+  "workflow":"Nenva Android production release","workflow_id":CODEMAGIC_WORKFLOW_ID,
+  "branch":CODEMAGIC_BRANCH,"runner":"Codemagic Mac mini M2 (from codemagic.yaml)",
+  "status":"ready" if configured else "setup_required",
+  "signing":"Existing nenva_release signing group is referenced by the Codemagic workflow.",
+  "note":"Private beta · one build at a time · 5 builds per workspace per rolling 24 hours. Codemagic retains build artifacts according to your account plan.",
+  "setup_hint":None if configured else "Create a Codemagic API token and add it as CODEMAGIC_API_TOKEN in the HiglowCloud API Render environment."}
 
 @app.get("/api/v1/android-builds")
 def list_android_builds(ctx=Depends(current),db:Session=Depends(get_db)):
- rows=db.scalars(select(AndroidBuild).where(AndroidBuild.org_id==ctx["org"]).order_by(desc(AndroidBuild.created_at)).limit(50)).all()
- installed=db.scalar(select(GitHubInstallation).where(GitHubInstallation.org_id==ctx["org"]))
- sync_android_builds(rows,installed,db)
+ rows=db.scalars(select(AndroidBuild).where(AndroidBuild.org_id==ctx["org"]).order_by(desc(AndroidBuild.created_at)).limit(30)).all()
+ token=os.getenv("CODEMAGIC_API_TOKEN","").strip()
+ if token:sync_android_builds(rows,token,db)
  return {"builds":[android_build_dict(x) for x in rows]}
 
 @app.post("/api/v1/android-builds",status_code=202)
 def create_android_build(x:AndroidBuildCreate,ctx=Depends(current),db:Session=Depends(get_db)):
- if ".." in x.branch or "//" in x.branch or x.branch.startswith("/") or x.branch.endswith("/") or "@{" in x.branch:
-  raise HTTPException(422,"Invalid Git branch.")
- installed=android_build_installation(db,ctx["org"])
- active=db.scalar(select(func.count(AndroidBuild.id)).where(AndroidBuild.status.in_(["queued","running"]))) or 0
- if active:raise HTTPException(429,"The private beta currently runs one Android build at a time. Wait for the active build to finish.")
+ token=codemagic_config()
+ active=db.scalar(select(func.count(AndroidBuild.id)).where(AndroidBuild.org_id==ctx["org"],AndroidBuild.status.in_(["queued","running"]))) or 0
+ if active:raise HTTPException(429,"One Android build is already running in this workspace. Wait for it to finish.")
  recent=db.scalar(select(func.count(AndroidBuild.id)).where(AndroidBuild.org_id==ctx["org"],AndroidBuild.created_at>=now()-timedelta(hours=24))) or 0
- if recent>=5:raise HTTPException(429,"Free beta allowance reached: five Android builds per rolling 24 hours.")
- token=github_installation_token(installed.installation_id)
- try:
-  source=github_api("/repos/"+urllib.parse.quote(x.repository,safe="/"),token=token)
-  github_api("/repos/"+ANDROID_BUILD_REPOSITORY,token=token)
-  github_api("/repos/"+ANDROID_BUILD_REPOSITORY+"/contents/"+urllib.parse.quote(ANDROID_BUILD_WORKFLOW,safe="/")+"?ref=main",token=token)
- except HTTPException as exc:
-  raise HTTPException(409,"The connected GitHub App must be installed on both HiglowCloud and the selected source repository, with Contents: read and Actions: read/write permissions. "+str(exc.detail))
- build=AndroidBuild(org_id=ctx["org"],user_id=ctx["user"].id,repository=source.get("full_name") or x.repository,
-  branch=x.branch,target=x.target,status="queued",logs="Build queued. Waiting for a temporary GitHub-hosted Linux runner.")
+ if recent>=5:raise HTTPException(429,"Private beta limit reached: five Android builds per rolling 24 hours.")
+ build=AndroidBuild(org_id=ctx["org"],user_id=ctx["user"].id,repository="mikewach2006-crypto/HiglowBiz",
+  branch=CODEMAGIC_BRANCH,target="Nenva Call + Nenva Android (signed)",status="queued",
+  logs="Submitting signed Android release to Codemagic.")
  db.add(build);db.commit();db.refresh(build)
  try:
-  github_api("/repos/"+ANDROID_BUILD_REPOSITORY+"/actions/workflows/android-build.yml/dispatches",token=token,method="POST",
-   body={"ref":"main","inputs":{"build_id":build.id}})
+  result=codemagic_request("https://api.codemagic.io/builds",token,method="POST",body={
+   "appId":CODEMAGIC_APP_ID,"workflowId":CODEMAGIC_WORKFLOW_ID,"branch":CODEMAGIC_BRANCH,
+   "labels":["HiglowCloud","Nenva Android"]
+  })
+  build_id=str(result.get("buildId") or result.get("id") or "")
+  if not build_id:raise HTTPException(502,"Codemagic accepted no build ID. Check the Codemagic build list.")
+  build.run_id=build_id
+  build.run_url="https://codemagic.io/app/"+CODEMAGIC_APP_ID+"/build/"+build_id
+  build.logs="Build accepted by Codemagic. The existing nenva_release signing group will be used by codemagic.yaml."
+  log(db,ctx,"android_build.queued",build_id)
+  db.commit();db.refresh(build)
+  return {"success":True,"build":android_build_dict(build)}
  except HTTPException as exc:
-  build.status="failed";build.error="Could not start the GitHub Actions runner. Check the GitHub App Actions permission."
-  build.logs=(build.logs or "")+"\nGitHub workflow dispatch failed: "+str(exc.detail)[:500]
-  build.finished_at=now();db.commit()
-  raise HTTPException(503,build.error+" "+str(exc.detail)[:300])
- log(db,ctx,"android_build.queued",build.id);db.commit();db.refresh(build)
- return {"success":True,"build":android_build_dict(build)}
+  build.status="failed";build.error=str(exc.detail)[:1000];build.logs=build.error;build.finished_at=now();db.commit()
+  raise
 
-@app.post("/api/v1/android-builds/internal/claim")
-def claim_android_build(x:AndroidBuildClaim,db:Session=Depends(get_db)):
- build=db.get(AndroidBuild,x.build_id)
- if not build:raise HTTPException(404,"Android build request not found.")
- installed=android_build_installation(db,build.org_id)
- token,run=verify_android_build_run(build,x.run_id,installed.installation_id)
- if run.get("status")!="in_progress":raise HTTPException(409,"The GitHub Actions runner is not active yet.")
- if build.run_id and build.run_id!=x.run_id:
-  raise HTTPException(409,"A different GitHub Actions run is already assigned to this build.")
- if build.status!="queued":
-  if build.run_id==x.run_id and build.status=="running":
-   raise HTTPException(409,"This Android build is already claimed.")
-  raise HTTPException(409,"This Android build is no longer waiting in the queue.")
- source=github_api("/repos/"+urllib.parse.quote(build.repository,safe="/"),token=token)
- scoped=github_api("/app/installations/"+str(installed.installation_id)+"/access_tokens",method="POST",
-  body={"repository_ids":[source["id"]],"permissions":{"contents":"read"}})
- source_token=scoped.get("token")
- if not source_token:raise HTTPException(502,"GitHub did not issue a read-only source token.")
- build.status="running";build.run_id=x.run_id;build.run_url=run.get("html_url") or ""
- build.started_at=now();build.logs=(build.logs or "")+"\nTemporary GitHub-hosted runner claimed this build."
- db.commit()
- return {"build":{"id":build.id,"repository":build.repository,"branch":build.branch,"target":build.target,"source_token":source_token}}
-
-@app.post("/api/v1/android-builds/internal/complete")
-def complete_android_build(x:AndroidBuildComplete,db:Session=Depends(get_db)):
- build=db.get(AndroidBuild,x.build_id)
- if not build:raise HTTPException(404,"Android build request not found.")
- installed=android_build_installation(db,build.org_id)
- token,run=verify_android_build_run(build,x.run_id,installed.installation_id)
- if build.run_id!=x.run_id or build.status!="running":raise HTTPException(409,"This build is not leased to the supplied GitHub Actions run.")
- final_status=x.status
- artifact=None
- if final_status=="succeeded":
-  artifacts=github_api("/repos/"+ANDROID_BUILD_REPOSITORY+"/actions/runs/"+x.run_id+"/artifacts?per_page=100",token=token).get("artifacts",[])
-  artifact=next((a for a in artifacts if a.get("name")=="higlowcloud-android-"+build.id and not a.get("expired")),None)
-  if not artifact:
-   final_status="failed";x.error="The workflow finished without a downloadable private APK artifact."
- if artifact:
-  build.artifact_id=str(artifact["id"]);build.artifact_name=artifact.get("name","")
- build.status=final_status;build.error=x.error if final_status=="failed" else ""
- build.finished_at=now();build.logs=(build.logs or "")+"\nGitHub Actions reported build "+final_status+"."
- if final_status=="succeeded":build.logs+=" Private APK artifact is ready."
- db.commit()
- return {"success":True,"status":build.status,"artifact_id":build.artifact_id}
-
-@app.get("/api/v1/android-builds/{build_id}/download")
-def download_android_build(build_id:str,ctx=Depends(current),db:Session=Depends(get_db)):
+@app.get("/api/v1/android-builds/{build_id}/download/{kind}")
+def download_android_build(build_id:str,kind:str,ctx=Depends(current),db:Session=Depends(get_db)):
  build=db.scalar(select(AndroidBuild).where(AndroidBuild.id==build_id,AndroidBuild.org_id==ctx["org"]))
- if not build or build.status!="succeeded" or not build.artifact_id:
-  raise HTTPException(404,"A completed APK artifact is not available for this build.")
- installed=android_build_installation(db,ctx["org"])
- token=github_installation_token(installed.installation_id)
- url="https://api.github.com/repos/"+ANDROID_BUILD_REPOSITORY+"/actions/artifacts/"+str(build.artifact_id)+"/zip"
- request=urllib.request.Request(url,headers={"Authorization":"Bearer "+token,"Accept":"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"})
- try:
-  upstream=urllib.request.urlopen(request,timeout=90)
- except urllib.error.HTTPError as exc:
-  detail=exc.read(500).decode(errors="replace")
-  raise HTTPException(502,"Private APK artifact download failed: "+detail[:300])
+ if not build or build.status!="succeeded" or not build.run_id:
+  raise HTTPException(404,"A completed signed APK build is not available.")
+ expected={"call":"app-call-release.apk","unified":"app-unified-release.apk"}.get(kind)
+ if not expected:raise HTTPException(404,"Unknown APK type.")
+ token=codemagic_config()
+ artifacts=codemagic_artifacts(build.run_id,token)
+ artifact=next((a for a in artifacts if a["name"].lower().endswith(expected)),None)
+ if not artifact:raise HTTPException(404,"The requested signed APK was not found in Codemagic artifacts. Open the build logs to inspect the artifact list.")
+ req=urllib.request.Request(artifact["url"],headers={"x-auth-token":token,"Accept":"application/octet-stream","User-Agent":"HiglowCloud-Android-Builds"})
+ try:upstream=urllib.request.urlopen(req,timeout=90)
+ except urllib.error.HTTPError as exc:raise HTTPException(502,"Codemagic artifact download failed with HTTP "+str(exc.code)+".")
  def stream_artifact():
   try:
    while True:
     chunk=upstream.read(1024*1024)
     if not chunk:break
     yield chunk
-  finally:
-   upstream.close()
- return StreamingResponse(stream_artifact(),media_type="application/zip",
-  headers={"Content-Disposition":'attachment; filename="HiglowCloud-Android-'+build.id[:8]+'.zip"',"Cache-Control":"private, no-store","X-Content-Type-Options":"nosniff"})
+  finally:upstream.close()
+ filename="Nenva-Call.apk" if kind=="call" else "Nenva-Android.apk"
+ return StreamingResponse(stream_artifact(),media_type="application/vnd.android.package-archive",
+  headers={"Content-Disposition":'attachment; filename="'+filename+'"',"Cache-Control":"private, no-store","X-Content-Type-Options":"nosniff"})
+
+@app.post("/api/v1/android-builds/{build_id}/cancel")
+def cancel_android_build(build_id:str,ctx=Depends(current),db:Session=Depends(get_db)):
+ build=db.scalar(select(AndroidBuild).where(AndroidBuild.id==build_id,AndroidBuild.org_id==ctx["org"]))
+ if not build:raise HTTPException(404,"Build not found.")
+ if build.status not in {"queued","running"} or not build.run_id:raise HTTPException(409,"This build cannot be canceled.")
+ token=codemagic_config()
+ codemagic_request("https://api.codemagic.io/builds/"+urllib.parse.quote(build.run_id,safe="")+"/cancel",token,method="POST")
+ build.status="failed";build.error="Build canceled from HiglowCloud.";build.finished_at=now();build.logs=build.error
+ db.commit()
+ return {"success":True,"build":android_build_dict(build)}
