@@ -862,6 +862,7 @@ def list_android_builds(ctx=Depends(current),db:Session=Depends(get_db)):
 
 @app.post("/api/v1/android-builds",status_code=202)
 def create_android_build(x:AndroidBuildCreate,ctx=Depends(current),db:Session=Depends(get_db)):
+ if ctx["role"] not in {"owner","admin"}:raise HTTPException(403,"Only workspace owners and admins can start release builds.")
  token=codemagic_config()
  active=db.scalar(select(func.count(AndroidBuild.id)).where(AndroidBuild.org_id==ctx["org"],AndroidBuild.status.in_(["queued","running"]))) or 0
  if active:raise HTTPException(429,"One Android build is already running in this workspace. Wait for it to finish.")
@@ -921,6 +922,7 @@ def download_android_build(build_id:str,kind:str,ctx=Depends(current),db:Session
 
 @app.post("/api/v1/android-builds/{build_id}/cancel")
 def cancel_android_build(build_id:str,ctx=Depends(current),db:Session=Depends(get_db)):
+ if ctx["role"] not in {"owner","admin"}:raise HTTPException(403,"Only workspace owners and admins can cancel release builds.")
  build=db.scalar(select(AndroidBuild).where(AndroidBuild.id==build_id,AndroidBuild.org_id==ctx["org"]))
  if not build:raise HTTPException(404,"Build not found.")
  if build.status not in {"queued","running"} or not build.run_id:raise HTTPException(409,"This build cannot be canceled.")
