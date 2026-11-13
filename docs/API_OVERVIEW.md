@@ -43,14 +43,15 @@ Requires a platform-admin account provisioned through ADMIN_EMAILS:
 The API currently queues deployments and resource requests. It does not yet provision application runtimes, edge routing or managed databases.
 
 
-## Android build workspace
 
-Requires an authenticated HiglowCloud account unless marked internal:
-- GET `/android-builds/status` — build provider and setup status.
-- GET `/android-builds` — current workspace build history and status refresh.
-- POST `/android-builds` — queue a supported Android build from an installed GitHub repository.
-- GET `/android-builds/{build_id}/download` — authenticated private artifact download.
-- POST `/android-builds/internal/claim` — internal GitHub Actions runner claim; the API validates the workflow run and returns a short-lived, source-repository-only read token.
-- POST `/android-builds/internal/complete` — internal runner completion callback; the API validates the workflow run and records the private artifact.
+## Android build workspace (Codemagic)
 
-The GitHub App needs Contents: read and Actions: read/write permissions and must be installed on both HiglowCloud and the selected source repository. See `docs/ANDROID_BUILDS.md`.
+Requires an authenticated HiglowCloud session:
+- GET `/android-builds/status` — Codemagic connection and fixed workflow configuration status.
+- GET `/android-builds` — workspace build history and refreshed Codemagic statuses.
+- POST `/android-builds` — queue both signed Android APKs using the existing Codemagic workflow.
+- GET `/android-builds/{build_id}/download/call` — authenticated standalone Nenva Call APK download.
+- GET `/android-builds/{build_id}/download/unified` — authenticated unified Nenva APK download.
+- POST `/android-builds/{build_id}/cancel` — cancel an active Codemagic build.
+
+The API requires `CODEMAGIC_API_TOKEN` in the server-side Render environment. The Codemagic app ID and workflow key are fixed to the existing HiglowBiz project and `nenva-android` workflow. The Codemagic API token is never sent to the browser.
