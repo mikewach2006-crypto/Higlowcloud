@@ -4,7 +4,7 @@ from datetime import datetime,timedelta,timezone
 from pathlib import Path,PurePosixPath
 from typing import Optional
 from fastapi import FastAPI,Depends,HTTPException,UploadFile,File,Request
-from fastapi.responses import RedirectResponse,FileResponse
+from fastapi.responses import RedirectResponse,FileResponse,StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer,HTTPAuthorizationCredentials
 from pydantic import BaseModel,Field
@@ -148,6 +148,24 @@ class GitHubDelivery(Base):
  __tablename__="github_deliveries"
  delivery_id:Mapped[str]=mapped_column(String(100),primary_key=True)
  received_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=now)
+class AndroidBuild(Base):
+ __tablename__="android_builds"
+ id:Mapped[str]=mapped_column(String(36),primary_key=True,default=lambda:str(uuid.uuid4()))
+ org_id:Mapped[int]=mapped_column(ForeignKey("organizations.id",ondelete="CASCADE"),index=True)
+ user_id:Mapped[int]=mapped_column(ForeignKey("users.id",ondelete="CASCADE"),index=True)
+ repository:Mapped[str]=mapped_column(String(255))
+ branch:Mapped[str]=mapped_column(String(200))
+ target:Mapped[str]=mapped_column(String(40))
+ status:Mapped[str]=mapped_column(String(24),default="queued",index=True)
+ run_id:Mapped[str]=mapped_column(String(40),nullable=True,index=True)
+ run_url:Mapped[str]=mapped_column(String(1000),default="")
+ artifact_id:Mapped[str]=mapped_column(String(40),nullable=True)
+ artifact_name:Mapped[str]=mapped_column(String(255),default="")
+ logs:Mapped[str]=mapped_column(Text,default="Build request accepted; waiting for a GitHub-hosted runner.")
+ error:Mapped[str]=mapped_column(String(1000),default="")
+ created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=now)
+ started_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=True)
+ finished_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=True)
 
 Base.metadata.create_all(bind=engine)
 
@@ -733,3 +751,188 @@ def disable(uid:int,ctx=Depends(platform_admin),db:Session=Depends(get_db)):
  if not u:raise HTTPException(404,"User not found.")
  if u.id==ctx["user"].id:raise HTTPException(400,"Cannot disable your own account.")
  u.active=False;db.commit();return {"ok":True}
+
+# On-demand Android CI. Build execution runs on a temporary GitHub-hosted runner,
+# never inside this public API process or the existing Render web service.
+ANDROID_BUILD_REPOSITORY="mikewach2006-crypto/Higlowcloud"
+ANDROID_BUILD_WORKFLOW=".github/workflows/android-build.yml"
+ANDROID_BUILD_TARGETS={"callDebug","unifiedDebug"}
+
+class AndroidBuildCreate(BaseModel):
+ repository:str=Field(pattern=r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
+ branch:str=Field(min_length=1,max_length=200,pattern=r"^[A-Za-z0-9._/-]{1,200}$")
+ target:str=Field(pattern=r"^(callDebug|unifiedDebug)$")
+
+class AndroidBuildClaim(BaseModel):
+ build_id:str=Field(min_length=36,max_length=36)
+ run_id:str=Field(min_length=1,max_length=30,pattern=r"^[0-9]+$")
+
+class AndroidBuildComplete(BaseModel):
+ build_id:str=Field(min_length=36,max_length=36)
+ run_id:str=Field(min_length=1,max_length=30,pattern=r"^[0-9]+$")
+ status:str=Field(pattern=r"^(succeeded|failed)$")
+ error:str=Field(default="",max_length=1000)
+
+def android_build_dict(x):
+ return {"id":x.id,"repository":x.repository,"branch":x.branch,"target":x.target,"status":x.status,
+  "run_id":x.run_id,"run_url":x.run_url,"artifact_id":x.artifact_id,"artifact_name":x.artifact_name,
+  "logs":(x.logs or "")[-12000:],"error":x.error or "","created_at":x.created_at,
+  "started_at":x.started_at,"finished_at":x.finished_at}
+
+def android_build_installation(db,org_id):
+ item=db.scalar(select(GitHubInstallation).where(GitHubInstallation.org_id==org_id))
+ if not item:raise HTTPException(409,"Connect the HiglowCloud GitHub App before starting an Android build.")
+ return item
+
+def verify_android_build_run(build,run_id,installation_id):
+ token=github_installation_token(installation_id)
+ run=github_api("/repos/"+ANDROID_BUILD_REPOSITORY+"/actions/runs/"+str(run_id),token=token)
+ repository=(run.get("repository") or {}).get("full_name","").lower()
+ if run.get("path")!=ANDROID_BUILD_WORKFLOW or run.get("event")!="workflow_dispatch" or repository!=ANDROID_BUILD_REPOSITORY.lower():
+  raise HTTPException(403,"This GitHub Actions run is not an authorised HiglowCloud Android build.")
+ if run.get("status") not in {"queued","in_progress","completed"}:
+  raise HTTPException(409,"The GitHub Actions run is not active.")
+ return token,run
+
+def sync_android_builds(rows,installation,db):
+ if not rows or not installation:return
+ try:
+  token=github_installation_token(installation.installation_id)
+  data=github_api("/repos/"+ANDROID_BUILD_REPOSITORY+"/actions/workflows/android-build.yml/runs?event=workflow_dispatch&branch=main&per_page=50",token=token)
+  runs=data.get("workflow_runs",[])
+  for build in rows:
+   if build.status not in {"queued","running"}:continue
+   match=next((r for r in runs if build.id in str(r.get("display_title",""))),None)
+   if not match:continue
+   build.run_id=str(match.get("id") or build.run_id or "") or None
+   build.run_url=match.get("html_url") or build.run_url or ""
+   if match.get("status")=="in_progress":build.status="running"
+   if match.get("status")=="completed":
+    if match.get("conclusion")=="success":
+     artifacts=github_api("/repos/"+ANDROID_BUILD_REPOSITORY+"/actions/runs/"+str(match["id"])+"/artifacts?per_page=100",token=token).get("artifacts",[])
+     artifact=next((a for a in artifacts if a.get("name")=="higlowcloud-android-"+build.id and not a.get("expired")),None)
+     if artifact:
+      build.status="succeeded";build.artifact_id=str(artifact["id"]);build.artifact_name=artifact.get("name","")
+      build.logs=(build.logs or "")+"\nGitHub Actions completed successfully; private APK artifact is ready."
+     else:
+      build.status="failed";build.error="GitHub Actions completed, but the private APK artifact was not found."
+    else:
+     build.status="failed";build.error="GitHub Actions ended with conclusion: "+str(match.get("conclusion") or "unknown")
+    build.finished_at=now()
+  db.commit()
+ except Exception:
+  db.rollback()
+
+@app.get("/api/v1/android-builds/status")
+def android_build_status(ctx=Depends(current),db:Session=Depends(get_db)):
+ installed=db.scalar(select(GitHubInstallation).where(GitHubInstallation.org_id==ctx["org"]))
+ configured=bool(os.getenv("GITHUB_APP_ID","").strip() and os.getenv("GITHUB_APP_PRIVATE_KEY","").strip())
+ ready=configured and bool(installed)
+ return {"provider":"GitHub Actions","runner":"temporary GitHub-hosted Linux runner",
+  "status":"ready" if ready else "setup_required","github_connected":bool(installed),
+  "note":"Private beta · one platform build at a time · 5 builds per workspace per rolling 24 hours · APK artifacts expire after 7 days.",
+  "setup_hint":None if ready else "Configure the HiglowCloud GitHub App in Render and connect it from the workspace. The app needs Contents: read and Actions: read/write permissions."}
+
+@app.get("/api/v1/android-builds")
+def list_android_builds(ctx=Depends(current),db:Session=Depends(get_db)):
+ rows=db.scalars(select(AndroidBuild).where(AndroidBuild.org_id==ctx["org"]).order_by(desc(AndroidBuild.created_at)).limit(50)).all()
+ installed=db.scalar(select(GitHubInstallation).where(GitHubInstallation.org_id==ctx["org"]))
+ sync_android_builds(rows,installed,db)
+ return {"builds":[android_build_dict(x) for x in rows]}
+
+@app.post("/api/v1/android-builds",status_code=202)
+def create_android_build(x:AndroidBuildCreate,ctx=Depends(current),db:Session=Depends(get_db)):
+ if ".." in x.branch or "//" in x.branch or x.branch.startswith("/") or x.branch.endswith("/") or "@{" in x.branch:
+  raise HTTPException(422,"Invalid Git branch.")
+ installed=android_build_installation(db,ctx["org"])
+ active=db.scalar(select(func.count(AndroidBuild.id)).where(AndroidBuild.status.in_(["queued","running"]))) or 0
+ if active:raise HTTPException(429,"The private beta currently runs one Android build at a time. Wait for the active build to finish.")
+ recent=db.scalar(select(func.count(AndroidBuild.id)).where(AndroidBuild.org_id==ctx["org"],AndroidBuild.created_at>=now()-timedelta(hours=24))) or 0
+ if recent>=5:raise HTTPException(429,"Free beta allowance reached: five Android builds per rolling 24 hours.")
+ token=github_installation_token(installed.installation_id)
+ try:
+  source=github_api("/repos/"+urllib.parse.quote(x.repository,safe="/"),token=token)
+  github_api("/repos/"+ANDROID_BUILD_REPOSITORY,token=token)
+  github_api("/repos/"+ANDROID_BUILD_REPOSITORY+"/contents/"+urllib.parse.quote(ANDROID_BUILD_WORKFLOW,safe="/")+"?ref=main",token=token)
+ except HTTPException as exc:
+  raise HTTPException(409,"The connected GitHub App must be installed on both HiglowCloud and the selected source repository, with Contents: read and Actions: read/write permissions. "+str(exc.detail))
+ build=AndroidBuild(org_id=ctx["org"],user_id=ctx["user"].id,repository=source.get("full_name") or x.repository,
+  branch=x.branch,target=x.target,status="queued",logs="Build queued. Waiting for a temporary GitHub-hosted Linux runner.")
+ db.add(build);db.commit();db.refresh(build)
+ try:
+  github_api("/repos/"+ANDROID_BUILD_REPOSITORY+"/actions/workflows/android-build.yml/dispatches",token=token,method="POST",
+   body={"ref":"main","inputs":{"build_id":build.id}})
+ except HTTPException as exc:
+  build.status="failed";build.error="Could not start the GitHub Actions runner. Check the GitHub App Actions permission."
+  build.logs=(build.logs or "")+"\nGitHub workflow dispatch failed: "+str(exc.detail)[:500]
+  build.finished_at=now();db.commit()
+  raise HTTPException(503,build.error+" "+str(exc.detail)[:300])
+ log(db,ctx,"android_build.queued",build.id);db.commit();db.refresh(build)
+ return {"success":True,"build":android_build_dict(build)}
+
+@app.post("/api/v1/android-builds/internal/claim")
+def claim_android_build(x:AndroidBuildClaim,db:Session=Depends(get_db)):
+ build=db.get(AndroidBuild,x.build_id)
+ if not build:raise HTTPException(404,"Android build request not found.")
+ installed=android_build_installation(db,build.org_id)
+ token,run=verify_android_build_run(build,x.run_id,installed.installation_id)
+ if build.status!="queued":
+  if build.run_id==x.run_id and build.status=="running":
+   raise HTTPException(409,"This Android build is already claimed.")
+  raise HTTPException(409,"This Android build is no longer waiting in the queue.")
+ source=github_api("/repos/"+urllib.parse.quote(build.repository,safe="/"),token=token)
+ scoped=github_api("/app/installations/"+str(installed.installation_id)+"/access_tokens",method="POST",
+  body={"repository_ids":[source["id"]],"permissions":{"contents":"read"}})
+ source_token=scoped.get("token")
+ if not source_token:raise HTTPException(502,"GitHub did not issue a read-only source token.")
+ build.status="running";build.run_id=x.run_id;build.run_url=run.get("html_url") or ""
+ build.started_at=now();build.logs=(build.logs or "")+"\nTemporary GitHub-hosted runner claimed this build."
+ db.commit()
+ return {"build":{"id":build.id,"repository":build.repository,"branch":build.branch,"target":build.target,"source_token":source_token}}
+
+@app.post("/api/v1/android-builds/internal/complete")
+def complete_android_build(x:AndroidBuildComplete,db:Session=Depends(get_db)):
+ build=db.get(AndroidBuild,x.build_id)
+ if not build:raise HTTPException(404,"Android build request not found.")
+ installed=android_build_installation(db,build.org_id)
+ token,run=verify_android_build_run(build,x.run_id,installed.installation_id)
+ if build.run_id!=x.run_id or build.status!="running":raise HTTPException(409,"This build is not leased to the supplied GitHub Actions run.")
+ final_status=x.status
+ artifact=None
+ if final_status=="succeeded":
+  artifacts=github_api("/repos/"+ANDROID_BUILD_REPOSITORY+"/actions/runs/"+x.run_id+"/artifacts?per_page=100",token=token).get("artifacts",[])
+  artifact=next((a for a in artifacts if a.get("name")=="higlowcloud-android-"+build.id and not a.get("expired")),None)
+  if not artifact:
+   final_status="failed";x.error="The workflow finished without a downloadable private APK artifact."
+ if artifact:
+  build.artifact_id=str(artifact["id"]);build.artifact_name=artifact.get("name","")
+ build.status=final_status;build.error=x.error if final_status=="failed" else ""
+ build.finished_at=now();build.logs=(build.logs or "")+"\nGitHub Actions reported build "+final_status+"."
+ if final_status=="succeeded":build.logs+=" Private APK artifact is ready."
+ db.commit()
+ return {"success":True,"status":build.status,"artifact_id":build.artifact_id}
+
+@app.get("/api/v1/android-builds/{build_id}/download")
+def download_android_build(build_id:str,ctx=Depends(current),db:Session=Depends(get_db)):
+ build=db.scalar(select(AndroidBuild).where(AndroidBuild.id==build_id,AndroidBuild.org_id==ctx["org"]))
+ if not build or build.status!="succeeded" or not build.artifact_id:
+  raise HTTPException(404,"A completed APK artifact is not available for this build.")
+ installed=android_build_installation(db,ctx["org"])
+ token=github_installation_token(installed.installation_id)
+ url="https://api.github.com/repos/"+ANDROID_BUILD_REPOSITORY+"/actions/artifacts/"+str(build.artifact_id)+"/zip"
+ request=urllib.request.Request(url,headers={"Authorization":"Bearer "+token,"Accept":"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"})
+ try:
+  upstream=urllib.request.urlopen(request,timeout=90)
+ except urllib.error.HTTPError as exc:
+  detail=exc.read(500).decode(errors="replace")
+  raise HTTPException(502,"Private APK artifact download failed: "+detail[:300])
+ def stream_artifact():
+  try:
+   while True:
+    chunk=upstream.read(1024*1024)
+    if not chunk:break
+    yield chunk
+  finally:
+   upstream.close()
+ return StreamingResponse(stream_artifact(),media_type="application/zip",
+  headers={"Content-Disposition":'attachment; filename="HiglowCloud-Android-'+build.id[:8]+'.zip"',"Cache-Control":"private, no-store","X-Content-Type-Options":"nosniff"})
