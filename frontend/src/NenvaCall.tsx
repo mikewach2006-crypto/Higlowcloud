@@ -2,8 +2,8 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowLeft, ArrowUp, Camera, Check, CheckCheck, CircleUserRound, LogOut, MessageSquare, Mic, MicOff, Phone, PhoneCall, PhoneOff, Search, Send, ShieldCheck, UserPlus, Video, VideoOff, X } from 'lucide-react'
 
 const configured = (import.meta as any).env.VITE_API_URL as string | undefined
-const apiRoot = (configured || 'https://higlowcloud-api.onrender.com/api/v1').replace(/\\/+$/, '')
-const API = apiRoot.endsWith('/api/v1') ? apiRoot : apiRoot.replace(/\\/api$/, '') + '/api/v1'
+const apiRoot = (configured || 'https://higlowcloud-api.onrender.com/api/v1').replace(/\/+$/, '')
+const API = apiRoot.endsWith('/api/v1') ? apiRoot : apiRoot.replace(/\/api$/, '') + '/api/v1'
 type Person = { id: number; name: string; email: string; online: boolean; is_contact?: boolean }
 type Message = { id: string; sender_id: number; recipient_id: number; body: string; created_at: string; read?: boolean }
 type CallEvent = { type: string; from_id?: number; from_name?: string; user_id?: number; message?: Message; data?: any }
