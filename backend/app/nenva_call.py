@@ -40,8 +40,11 @@ class CallUser(Base):
     terms_version: Mapped[str] = mapped_column(String(20), default="1.0")
     privacy_version: Mapped[str] = mapped_column(String(20), default="1.0")
     accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
-    verification_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    verification_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    email_verification_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    phone_verification_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    email_verification_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    phone_verification_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    verification_attempts: Mapped[int] = mapped_column(Integer, default=0)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
@@ -244,15 +247,18 @@ def register(x: RegisterIn, db: Session = Depends(get_db)):
         raise HTTPException(422, "Enter your phone number in international format, for example +2547XXXXXXXX.")
     if db.scalar(select(CallUser).where(or_(CallUser.email == email, CallUser.phone == phone))):
         raise HTTPException(409, "That email address or phone number is already registered.")
-    code = f"{secrets.randbelow(1000000):06d}"
+    email_code = f"{secrets.randbelow(1000000):06d}"
+    phone_code = f"{secrets.randbelow(1000000):06d}"
     user = CallUser(name=x.name.strip(), email=email, phone=phone, password_hash=pw_hash(x.password),
                     terms_version="1.0", privacy_version="1.0", accepted_at=now(),
-                    verification_hash=_code_hash(code), verification_expires_at=now() + timedelta(minutes=10))
+                    email_verification_hash=_code_hash(email_code), phone_verification_hash=_code_hash(phone_code),
+                    email_verification_expires_at=now() + timedelta(minutes=10),
+                    phone_verification_expires_at=now() + timedelta(minutes=10))
     db.add(user)
     db.flush()
     try:
-        _send_email(email, code)
-        _send_sms(phone, code)
+        _send_email(email, email_code)
+        _send_sms(phone, phone_code)
     except Exception:
         db.rollback()
         raise
@@ -263,20 +269,35 @@ def register(x: RegisterIn, db: Session = Depends(get_db)):
 @router.post("/auth/verify")
 def verify(x: VerifyIn, db: Session = Depends(get_db)):
     user = db.scalar(select(CallUser).where(CallUser.email == x.email.strip().lower()))
-    if not user or not user.verification_hash or not user.verification_expires_at:
+    if not user:
         raise HTTPException(400, "No active verification request was found.")
-    expiry = user.verification_expires_at
+    if user.verification_attempts >= 5:
+        raise HTTPException(429, "Too many verification attempts. Register again or contact support.")
+    code_hash = user.email_verification_hash if x.channel == "email" else user.phone_verification_hash
+    expiry = user.email_verification_expires_at if x.channel == "email" else user.phone_verification_expires_at
+    if not code_hash or not expiry:
+        already = user.email_verified if x.channel == "email" else user.phone_verified
+        if already:
+            return {"ok": True, "email_verified": user.email_verified, "phone_verified": user.phone_verified,
+                    "access_token": _token(user.id) if user.email_verified and user.phone_verified else None}
+        raise HTTPException(400, "No active verification request was found.")
     if expiry.tzinfo is None: expiry = expiry.replace(tzinfo=UTC)
-    if expiry < now() or not hmac.compare_digest(user.verification_hash, _code_hash(x.code)):
-        raise HTTPException(400, "The verification code is invalid or expired. Register again to request a new code.")
-    if x.channel == "email": user.email_verified = True
-    else: user.phone_verified = True
-    if user.email_verified and user.phone_verified:
-        user.verification_hash = None
-        user.verification_expires_at = None
+    if expiry < now() or not hmac.compare_digest(code_hash, _code_hash(x.code)):
+        user.verification_attempts += 1
+        db.commit()
+        raise HTTPException(400, "The verification code is invalid or expired.")
+    if x.channel == "email":
+        user.email_verified = True
+        user.email_verification_hash = None
+        user.email_verification_expires_at = None
+    else:
+        user.phone_verified = True
+        user.phone_verification_hash = None
+        user.phone_verification_expires_at = None
     db.commit()
     return {"ok": True, "email_verified": user.email_verified, "phone_verified": user.phone_verified,
             "access_token": _token(user.id) if user.email_verified and user.phone_verified else None}
+
 
 
 @router.post("/auth/login")
