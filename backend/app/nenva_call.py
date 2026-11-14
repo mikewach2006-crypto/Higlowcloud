@@ -6,7 +6,7 @@ import json
 import os
 import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
@@ -114,7 +114,7 @@ def user_card(user, online: bool = False):
 def create_socket_ticket(user=Depends(require_user), db: Session = Depends(get_db)):
     raw = secrets.token_urlsafe(32)
     digest = hashlib.sha256(raw.encode()).hexdigest()
-    db.add(CallSocketTicket(id=digest, user_id=user.id, expires_at=utcnow().replace(microsecond=0) + __import__("datetime").timedelta(minutes=2)))
+    db.add(CallSocketTicket(id=digest, user_id=user.id, expires_at=utcnow() + timedelta(minutes=2)))
     db.commit()
     return {"ticket": raw, "expires_in": 120}
 
