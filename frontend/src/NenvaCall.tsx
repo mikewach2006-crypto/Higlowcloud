@@ -6,7 +6,7 @@ const apiRoot = (configured || 'https://higlowcloud-api.onrender.com/api/v1').re
 const API = apiRoot.endsWith('/api/v1') ? apiRoot : apiRoot.replace(/\\/api$/, '') + '/api/v1'
 type Person = { id: number; name: string; email: string; online: boolean; is_contact?: boolean }
 type Message = { id: string; sender_id: number; recipient_id: number; body: string; created_at: string; read?: boolean }
-type CallEvent = { type: string; from_id?: number; from_name?: string; data?: any }
+type CallEvent = { type: string; from_id?: number; from_name?: string; user_id?: number; message?: Message; data?: any }
 
 export default function NenvaCall() {
   const [token, setToken] = useState(localStorage.getItem('nenva_call_token') || '')
@@ -26,6 +26,7 @@ export default function NenvaCall() {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<Person[]>([])
   const [incoming, setIncoming] = useState<any>(null)
+  const [offerReady, setOfferReady] = useState(false)
   const [callState, setCallState] = useState<'idle'|'calling'|'ringing'|'connected'>('idle')
   const [mediaMode, setMediaMode] = useState<'audio'|'video'>('audio')
   const [muted, setMuted] = useState(false)
@@ -74,6 +75,7 @@ export default function NenvaCall() {
     localStreamRef.current?.getTracks().forEach(t => t.stop()); localStreamRef.current = null
     remoteStreamRef.current?.getTracks().forEach(t => t.stop()); remoteStreamRef.current = null
     pendingOfferRef.current = null; pendingIceRef.current = []
+    setOfferReady(false)
     setIncoming(null); setCallState('idle'); setShowCall(false); setMuted(false); setCameraOff(false)
   }, [])
 
@@ -108,6 +110,7 @@ export default function NenvaCall() {
       }
       if (data.type === 'offer') {
         pendingOfferRef.current = { from: data.from_id, offer: data.data?.description }
+        setOfferReady(!!data.data?.description)
         if (callState === 'connected' && pcRef.current && data.data?.description) {
           await pcRef.current.setRemoteDescription(data.data.description)
           const answer = await pcRef.current.createAnswer()
@@ -231,7 +234,7 @@ export default function NenvaCall() {
       {showCall&&<section className="nc-call-stage"><div className="nc-video-grid"><video ref={remoteVideoRef} autoPlay playsInline/><video className="nc-local-video" ref={localVideoRef} autoPlay playsInline muted/><div className="nc-call-label">{callState==='connected'?'Call connected':callState==='calling'?'Connecting call…':'In call with '+(selected?.name||'contact')}</div></div><div className="nc-call-controls"><button className={muted?'selected':''} onClick={()=>{const t=localStreamRef.current?.getAudioTracks()[0];if(t)t.enabled=!t.enabled;setMuted(!muted)}}>{muted?<MicOff/>:<Mic/>}</button>{mediaMode==='video'&&<button className={cameraOff?'selected':''} onClick={()=>{const t=localStreamRef.current?.getVideoTracks()[0];if(t)t.enabled=!t.enabled;setCameraOff(!cameraOff)}}>{cameraOff?<VideoOff/>:<Camera/>}</button>}<button className="hangup" onClick={()=>clearCall(true)}><PhoneOff/></button></div></section>}
       {!selected&&!showCall&&<div className="nc-empty"><div className="nc-empty-icon"><MessageSquare size={32}/></div><h3>Your conversations start here</h3><p>Search for a HiglowCloud user by name or email, add them, then send a message or start a call.</p></div>}
       {selected&&!showCall&&<><div className="nc-messages">{messages.map(m=><div key={m.id} className={'nc-message '+(m.sender_id===profile.id?'mine':'')}><div>{m.body}</div><small>{new Date(m.created_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} {m.sender_id===profile.id&&(m.read?<CheckCheck size={13}/>:<Check size={13}/>)}</small></div>)}</div><form className="nc-compose" onSubmit={sendMessage}><input value={draft} onChange={e=>setDraft(e.target.value)} placeholder={'Message '+selected.name+'…'} maxLength={5000}/><button disabled={!draft.trim()} aria-label="Send message"><Send size={18}/></button></form></>}
-      {incoming&&<div className="nc-incoming"><div className="nc-incoming-card"><div className="nc-avatar large">{incoming.name.slice(0,1).toUpperCase()}</div><span className="nc-kicker">INCOMING {incoming.media==='video'?'VIDEO':'VOICE'} CALL</span><h3>{incoming.name}</h3><p>is calling you</p><div><button className="decline" onClick={()=>{wsRef.current?.send(JSON.stringify({type:'decline',to:incoming.id,data:{}}));clearCall(false)}}><PhoneOff/> Decline</button><button className="accept" onClick={acceptCall}><PhoneCall/> Answer</button></div></div></div>}
+      {incoming&&<div className="nc-incoming"><div className="nc-incoming-card"><div className="nc-avatar large">{incoming.name.slice(0,1).toUpperCase()}</div><span className="nc-kicker">INCOMING {incoming.media==='video'?'VIDEO':'VOICE'} CALL</span><h3>{incoming.name}</h3><p>is calling you</p><div><button className="decline" onClick={()=>{wsRef.current?.send(JSON.stringify({type:'decline',to:incoming.id,data:{}}));clearCall(false)}}><PhoneOff/> Decline</button><button className="accept" disabled={!offerReady} onClick={acceptCall}><PhoneCall/> {offerReady?'Answer':'Connecting…'}</button></div></div></div>}
     </main>
   </div>
 }
