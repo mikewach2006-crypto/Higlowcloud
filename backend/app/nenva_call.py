@@ -37,6 +37,9 @@ class CallUser(Base):
     password_hash: Mapped[str] = mapped_column(String(255))
     email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     phone_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    terms_version: Mapped[str] = mapped_column(String(20), default="1.0")
+    privacy_version: Mapped[str] = mapped_column(String(20), default="1.0")
+    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     verification_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     verification_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -146,7 +149,6 @@ def _send_sms(phone: str, code: str) -> None:
 
 def _token(user_id: int) -> str:
     head = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
-    payload = secrets.token_urlsafe(1)  # replaced below with a deterministic JWT payload
     import base64
     payload = base64.urlsafe_b64encode(json.dumps({"sub": user_id, "exp": int(time.time()) + 86400}).encode()).rstrip(b"=").decode()
     body = head + "." + payload
@@ -180,6 +182,8 @@ class RegisterIn(BaseModel):
     email: str = Field(min_length=5, max_length=255)
     phone: str = Field(min_length=8, max_length=24)
     password: str = Field(min_length=10, max_length=128)
+    accept_terms: bool
+    accept_privacy: bool
 
 
 class VerifyIn(BaseModel):
@@ -230,6 +234,8 @@ def client_config():
 
 @router.post("/auth/register", status_code=201)
 def register(x: RegisterIn, db: Session = Depends(get_db)):
+    if not x.accept_terms or not x.accept_privacy:
+        raise HTTPException(422, "You must accept the Nenva Call Terms of Service and Privacy Policy.")
     email = x.email.strip().lower()
     phone = x.phone.strip()
     if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
@@ -240,6 +246,7 @@ def register(x: RegisterIn, db: Session = Depends(get_db)):
         raise HTTPException(409, "That email address or phone number is already registered.")
     code = f"{secrets.randbelow(1000000):06d}"
     user = CallUser(name=x.name.strip(), email=email, phone=phone, password_hash=pw_hash(x.password),
+                    terms_version="1.0", privacy_version="1.0", accepted_at=now(),
                     verification_hash=_code_hash(code), verification_expires_at=now() + timedelta(minutes=10))
     db.add(user)
     db.flush()
@@ -365,6 +372,12 @@ def start_call(x: CallIn, user: CallUser = Depends(_identity), db: Session = Dep
 
 @router.get("/calls/incoming")
 def incoming_calls(user: CallUser = Depends(_identity), db: Session = Depends(get_db)):
+    cutoff = now() - timedelta(seconds=60)
+    stale = db.scalars(select(CallSession).where(CallSession.receiver_id == user.id, CallSession.status == "ringing", CallSession.created_at < cutoff)).all()
+    for call in stale:
+        call.status = "ended"
+        call.ended_at = now()
+    if stale: db.commit()
     rows = db.scalars(select(CallSession).where(CallSession.receiver_id == user.id, CallSession.status == "ringing")
                       .order_by(CallSession.created_at.desc()).limit(20)).all()
     return [{"id": c.id, "caller": {"id": c.caller_id, "name": db.get(CallUser, c.caller_id).name}, "media": c.media, "created_at": c.created_at} for c in rows]
