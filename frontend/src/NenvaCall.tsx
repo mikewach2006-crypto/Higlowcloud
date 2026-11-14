@@ -88,53 +88,76 @@ export default function NenvaCall() {
       await refreshLists()
     }).catch(e => { if (active) { setError(e.message); setToken(''); localStorage.removeItem('nenva_call_token') } })
     let socket: WebSocket | null = null
-    request('/nenva-call/socket-ticket', { method: 'POST', body: '{}' }).then(({ ticket }) => {
+    let heartbeat: number | undefined
+    let retryTimer: number | undefined
+    let attempts = 0
+    const openSocket = async () => {
+      const { ticket } = await request('/nenva-call/socket-ticket', { method: 'POST', body: '{}' })
       if (!active) return
       const wsUrl = API.replace(/^http/, 'ws') + '/nenva-call/ws?ticket=' + encodeURIComponent(ticket)
-      const ws = new WebSocket(wsUrl); socket = ws; wsRef.current = ws
-      ws.onopen = () => setSocketState('Connected')
-    ws.onclose = () => setSocketState('Reconnecting')
-    ws.onerror = () => setSocketState('Offline')
+      const ws = new WebSocket(wsUrl)
+      socket = ws
+      wsRef.current = ws
+      ws.onopen = () => {
+        attempts = 0
+        setSocketState('Connected')
+        if (heartbeat) window.clearInterval(heartbeat)
+        heartbeat = window.setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }))
+        }, 25000)
+      }
+      ws.onclose = () => {
+        setSocketState('Reconnecting')
+        if (heartbeat) window.clearInterval(heartbeat)
+        if (active) {
+          const delay = Math.min(1000 * (2 ** attempts), 30000)
+          attempts += 1
+          retryTimer = window.setTimeout(() => openSocket().catch(e => { if (active) setError(e.message) }), delay)
+        }
+      }
+      ws.onerror = () => setSocketState('Offline')
       ws.onmessage = async event => {
-      let data: CallEvent
-      try { data = JSON.parse(event.data) } catch { return }
-      if (data.type === 'presence') setContacts(old => old.map(p => p.id === data.user_id ? { ...p, online: !!data.online } : p))
-      if (data.type === 'message') {
-        const m = data.message as Message
-        if (selectedRef.current && (m.sender_id === selectedRef.current.id || m.recipient_id === selectedRef.current.id)) {
-          setMessages(old => old.some(x => x.id === m.id) ? old : [...old, m])
+        let data: CallEvent
+        try { data = JSON.parse(event.data) } catch { return }
+        if (data.type === 'presence') setContacts(old => old.map(p => p.id === data.user_id ? { ...p, online: !!data.online } : p))
+        if (data.type === 'message') {
+          const m = data.message as Message
+          if (selectedRef.current && (m.sender_id === selectedRef.current.id || m.recipient_id === selectedRef.current.id)) {
+            setMessages(old => old.some(x => x.id === m.id) ? old : [...old, m])
+          }
+          refreshLists().catch(() => {})
         }
-        refreshLists().catch(() => {})
-      }
-      if (data.type === 'call') {
-        setIncoming({ id: data.from_id, name: data.from_name, media: data.data?.media || 'audio' })
-        setMediaMode(data.data?.media === 'video' ? 'video' : 'audio')
-        setCallState('ringing')
-      }
-      if (data.type === 'offer') {
-        pendingOfferRef.current = { from: data.from_id, offer: data.data?.description }
-        setOfferReady(!!data.data?.description)
-        if (callState === 'connected' && pcRef.current && data.data?.description) {
+        if (data.type === 'call') {
+          setIncoming({ id: data.from_id, name: data.from_name, media: data.data?.media || 'audio' })
+          setMediaMode(data.data?.media === 'video' ? 'video' : 'audio')
+          setCallState('ringing')
+        }
+        if (data.type === 'offer') {
+          pendingOfferRef.current = { from: data.from_id, offer: data.data?.description }
+          setOfferReady(!!data.data?.description)
+        }
+        if (data.type === 'answer' && pcRef.current && data.data?.description) {
           await pcRef.current.setRemoteDescription(data.data.description)
-          const answer = await pcRef.current.createAnswer()
-          await pcRef.current.setLocalDescription(answer)
-          wsRef.current?.send(JSON.stringify({ type: 'answer', to: data.from_id, data: { description: answer } }))
+          setCallState('connected')
+          for (const candidate of pendingIceRef.current.splice(0)) await pcRef.current.addIceCandidate(candidate).catch(() => {})
         }
+        if (data.type === 'ice' && data.data?.candidate) {
+          if (pcRef.current?.remoteDescription) await pcRef.current.addIceCandidate(data.data.candidate).catch(() => {})
+          else pendingIceRef.current.push(data.data.candidate)
+        }
+        if (data.type === 'hangup' || data.type === 'decline') clearCall(false)
+        if (data.type === 'error') setError(data.data?.message || 'Call connection error.')
       }
-      if (data.type === 'answer' && pcRef.current && data.data?.description) {
-        await pcRef.current.setRemoteDescription(data.data.description)
-        setCallState('connected')
-        for (const candidate of pendingIceRef.current.splice(0)) await pcRef.current.addIceCandidate(candidate).catch(() => {})
-      }
-      if (data.type === 'ice' && data.data?.candidate) {
-        if (pcRef.current?.remoteDescription) await pcRef.current.addIceCandidate(data.data.candidate).catch(() => {})
-        else pendingIceRef.current.push(data.data.candidate)
-      }
-      if (data.type === 'hangup' || data.type === 'decline') clearCall(false)
-      if (data.type === 'error') setError(data.data?.message || 'Call connection error.')
-      }
-    }).catch(e => { if (active) { setSocketState('Offline'); setError(e.message) } })
-    return () => { active = false; socket?.close(); wsRef.current = null; clearCall(false) }
+    }
+    openSocket().catch(e => { if (active) { setSocketState('Offline'); setError(e.message) } })
+    return () => {
+      active = false
+      if (heartbeat) window.clearInterval(heartbeat)
+      if (retryTimer) window.clearTimeout(retryTimer)
+      socket?.close()
+      wsRef.current = null
+      clearCall(false)
+    }
   }, [token])
 
   const authenticate = async (e: FormEvent) => {
