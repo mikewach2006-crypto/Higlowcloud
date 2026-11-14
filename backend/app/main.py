@@ -932,3 +932,8 @@ def cancel_android_build(build_id:str,ctx=Depends(current),db:Session=Depends(ge
  log(db,ctx,"android_build.cancelled",build.run_id)
  db.commit()
  return {"success":True,"build":android_build_dict(build)}
+
+
+# Nenva Call cloud service routes (isolated from the HiglowCloud workspace API).
+from .nenva_call import router as nenva_call_router
+app.include_router(nenva_call_router)
