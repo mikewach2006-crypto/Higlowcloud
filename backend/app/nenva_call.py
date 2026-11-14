@@ -10,6 +10,7 @@ import smtplib
 import time
 import urllib.parse
 import urllib.request
+import uuid
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from typing import Optional
@@ -76,7 +77,7 @@ class CallMessage(Base):
 
 class CallSession(Base):
     __tablename__ = "nenva_call_sessions"
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: __import__("uuid").uuid4().__str__())
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     caller_id: Mapped[int] = mapped_column(ForeignKey("nenva_call_users.id", ondelete="CASCADE"), index=True)
     receiver_id: Mapped[int] = mapped_column(ForeignKey("nenva_call_users.id", ondelete="CASCADE"), index=True)
     media: Mapped[str] = mapped_column(String(12), default="audio")
@@ -166,6 +167,7 @@ def _identity(credentials: HTTPAuthorizationCredentials = Depends(bearer), db: S
     try:
         import base64
         head, payload, signature = credentials.credentials.split(".")
+        if head != "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9": raise ValueError()
         body = head + "." + payload
         expected = base64.urlsafe_b64encode(hmac.new(SECRET, body.encode(), hashlib.sha256).digest()).rstrip(b"=").decode()
         if not hmac.compare_digest(expected, signature):
@@ -412,6 +414,13 @@ def start_call(x: CallIn, user: CallUser = Depends(_identity), db: Session = Dep
     if not receiver or not receiver.active or not receiver.email_verified or not receiver.phone_verified:
         raise HTTPException(404, "The person you are calling is not available on Nenva Call.")
     if receiver.id == user.id: raise HTTPException(422, "You cannot call yourself.")
+    stale_calls = db.scalars(select(CallSession).where(or_(and_(CallSession.caller_id == user.id, CallSession.receiver_id == receiver.id),
+                                                            and_(CallSession.caller_id == receiver.id, CallSession.receiver_id == user.id)),
+                                               CallSession.status == "ringing", CallSession.created_at < now() - timedelta(seconds=60))).all()
+    for stale_call in stale_calls:
+        stale_call.status = "ended"
+        stale_call.ended_at = now()
+    if stale_calls: db.commit()
     active = db.scalar(select(CallSession).where(or_(and_(CallSession.caller_id == user.id, CallSession.receiver_id == receiver.id),
                                                        and_(CallSession.caller_id == receiver.id, CallSession.receiver_id == user.id)),
                                           CallSession.status.in_(["ringing", "active"])))
