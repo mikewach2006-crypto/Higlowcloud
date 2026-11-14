@@ -87,12 +87,15 @@ export default function NenvaCall() {
       setProfile(data.user); setIceServers(data.ice_servers)
       await refreshLists()
     }).catch(e => { if (active) { setError(e.message); setToken(''); localStorage.removeItem('nenva_call_token') } })
-    const wsUrl = API.replace(/^http/, 'ws') + '/nenva-call/ws?token=' + encodeURIComponent(token)
-    const ws = new WebSocket(wsUrl); wsRef.current = ws
-    ws.onopen = () => setSocketState('Connected')
+    let socket: WebSocket | null = null
+    request('/nenva-call/socket-ticket', { method: 'POST', body: '{}' }).then(({ ticket }) => {
+      if (!active) return
+      const wsUrl = API.replace(/^http/, 'ws') + '/nenva-call/ws?ticket=' + encodeURIComponent(ticket)
+      const ws = new WebSocket(wsUrl); socket = ws; wsRef.current = ws
+      ws.onopen = () => setSocketState('Connected')
     ws.onclose = () => setSocketState('Reconnecting')
     ws.onerror = () => setSocketState('Offline')
-    ws.onmessage = async event => {
+      ws.onmessage = async event => {
       let data: CallEvent
       try { data = JSON.parse(event.data) } catch { return }
       if (data.type === 'presence') setContacts(old => old.map(p => p.id === data.user_id ? { ...p, online: !!data.online } : p))
@@ -129,8 +132,9 @@ export default function NenvaCall() {
       }
       if (data.type === 'hangup' || data.type === 'decline') clearCall(false)
       if (data.type === 'error') setError(data.data?.message || 'Call connection error.')
-    }
-    return () => { active = false; ws.close(); wsRef.current = null; clearCall(false) }
+      }
+    }).catch(e => { if (active) { setSocketState('Offline'); setError(e.message) } })
+    return () => { active = false; socket?.close(); wsRef.current = null; clearCall(false) }
   }, [token])
 
   const authenticate = async (e: FormEvent) => {
