@@ -44,6 +44,23 @@ The API currently queues deployments and resource requests. It does not yet prov
 
 
 
+## Nenva Call cloud service
+
+Separate Nenva Call identities and data, backed by the HiglowCloud PostgreSQL connection:
+- GET `/nenva-call/health` and GET `/nenva-call/config`
+- POST `/nenva-call/auth/register` — requires name, email, E.164 phone, password, `accept_terms: true` and `accept_privacy: true`; sends separate email/SMS codes.
+- POST `/nenva-call/auth/verify` — verify `email` or `phone` using the channel-specific code.
+- POST `/nenva-call/auth/resend` — resend codes, rate-limited to one request per minute.
+- POST `/nenva-call/auth/login`; GET `/nenva-call/auth/me`
+- GET/POST `/nenva-call/contacts`
+- GET/POST `/nenva-call/conversations/{conversation_id}/messages`
+- POST `/nenva-call/calls`; GET `/nenva-call/calls/incoming`; POST `/nenva-call/calls/{call_id}/accept`
+- POST/GET `/nenva-call/calls/{call_id}/signals`; POST `/nenva-call/calls/{call_id}/end`; GET `/nenva-call/calls/history`
+
+Set SMTP and Africa's Talking environment variables for account verification. Set TURN_URLS, TURN_USERNAME and TURN_CREDENTIAL for reliable WebRTC connectivity. See [NENVA_CALL_CLOUD.md](NENVA_CALL_CLOUD.md) for deployment and scaling boundaries, and the [Terms](NENVA_CALL_TERMS.md) and [Privacy Policy](NENVA_CALL_PRIVACY.md) drafts.
+
+This first cloud API version stores messages and call signalling in PostgreSQL and clients poll for updates. It does not yet provide push notifications, WebSocket delivery, end-to-end encryption, account recovery or production-scale media relay. Do not describe the service as production-ready until these gaps and cross-network call tests are completed.
+
 ## Android build workspace (Codemagic)
 
 Requires an authenticated HiglowCloud session:
