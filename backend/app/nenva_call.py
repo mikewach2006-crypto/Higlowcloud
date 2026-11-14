@@ -210,7 +210,10 @@ async def send_message(x: MessageIn, user=Depends(require_user), db: Session = D
     recipient = db.get(User, x.recipient_id)
     if not recipient or not recipient.active or recipient.id == user.id or not is_contact(db, user.id, recipient.id):
         raise HTTPException(403, "Add this person as a contact before messaging.")
-    item = CallMessage(sender_id=user.id, recipient_id=recipient.id, body=x.body.strip())
+    body = x.body.strip()
+    if not body:
+        raise HTTPException(422, "Message cannot be empty.")
+    item = CallMessage(sender_id=user.id, recipient_id=recipient.id, body=body)
     db.add(item)
     db.commit()
     db.refresh(item)
@@ -229,15 +232,18 @@ async def call_socket(socket: WebSocket, ticket: str = ""):
         saved = db.get(CallSocketTicket, digest)
         if not saved or saved.expires_at.replace(tzinfo=UTC) < utcnow():
             await socket.close(code=4401)
+            db.close()
             return
         user = db.get(User, saved.user_id)
         db.delete(saved)
         db.commit()
         if not user or not user.active:
             await socket.close(code=4401)
+            db.close()
             return
     except Exception:
         await socket.close(code=4401)
+        db.close()
         return
     await signal.connect(user.id, socket)
     try:
