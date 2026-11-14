@@ -55,3 +55,18 @@ Requires an authenticated HiglowCloud session:
 - POST `/android-builds/{build_id}/cancel` — cancel an active Codemagic build.
 
 The API requires `CODEMAGIC_API_TOKEN` in the server-side Render environment. The Codemagic app ID and workflow key are fixed to the existing HiglowBiz project and `nenva-android` workflow. The Codemagic API token is never sent to the browser.
+
+
+## Nenva Call
+
+Requires a valid HiglowCloud bearer session:
+- POST `/nenva-call/socket-ticket` — issue a single-use, two-minute WebSocket ticket.
+- GET `/nenva-call/config` — current profile and ICE server configuration.
+- GET `/nenva-call/contacts/search?q=...` — search active users.
+- GET/POST `/nenva-call/contacts` — list/add contacts.
+- GET `/nenva-call/conversations` — recent conversations.
+- GET `/nenva-call/messages/{peer_id}` — retrieve and mark messages read.
+- POST `/nenva-call/messages` — send a persistent direct message.
+- WebSocket `/nenva-call/ws?ticket=...` — live message notifications, presence and WebRTC signalling.
+
+See [NENVA_CALL.md](NENVA_CALL.md) for the deployment boundary, TURN configuration and verification checklist.
