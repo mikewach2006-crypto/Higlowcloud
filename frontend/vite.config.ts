@@ -1,14 +1,14 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 export default defineConfig({
   plugins: [react()],
   build: {
     rollupOptions: {
       input: {
-        dashboard: resolve(__dirname, 'index.html'),
-        nenvaCall: resolve(__dirname, 'nenva-call.html'),
+        dashboard: fileURLToPath(new URL('./index.html', import.meta.url)),
+        nenvaCall: fileURLToPath(new URL('./nenva-call.html', import.meta.url)),
       },
     },
   },
