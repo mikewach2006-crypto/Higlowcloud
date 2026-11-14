@@ -38,6 +38,12 @@ Frontend:
 Before accepting customers, implement and test email verification, password reset, MFA, workspace invitations/RBAC, signed worker jobs, isolated builders and runtime sandboxes, persistent object storage, TLS edge routing, managed database provisioning, metering/billing, backups, abuse controls and security monitoring.
 
 
+## Nenva Call cloud service (integration in progress)
+
+A separate Nenva Call API is being added under `/api/v1/nenva-call`. It stores app accounts, contacts, messages and WebRTC call-signalling records in separate PostgreSQL tables. Email verification uses SMTP; phone verification uses Africa's Talking; TURN settings are supplied through server-only environment variables. Read [docs/NENVA_CALL_CLOUD.md](docs/NENVA_CALL_CLOUD.md) before deployment.
+
+The cloud API does not depend on the operator's PC. However, the current implementation uses client polling rather than push/WebSocket delivery, requires provider credentials and a TURN relay, and still needs Windows/Android client integration and live two-device testing. The existing free Render plan is suitable only for development/testing, not dependable always-on calling.
+
 ## Android builds (private beta)
 
 HiglowCloud delegates Android compilation and persistent release signing to the existing Codemagic app. The private workspace at `/android-builds/` queues builds, tracks Codemagic status, and proxies signed Nenva Call and unified Nenva APK downloads. See [docs/ANDROID_BUILDS.md](docs/ANDROID_BUILDS.md) for the one-time API-token connection and the existing `nenva_release` signing setup.
