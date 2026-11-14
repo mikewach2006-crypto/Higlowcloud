@@ -43,3 +43,8 @@ Before accepting customers, implement and test email verification, password rese
 HiglowCloud delegates Android compilation and persistent release signing to the existing Codemagic app. The private workspace at `/android-builds/` queues builds, tracks Codemagic status, and proxies signed Nenva Call and unified Nenva APK downloads. See [docs/ANDROID_BUILDS.md](docs/ANDROID_BUILDS.md) for the one-time API-token connection and the existing `nenva_release` signing setup.
 
 This integration does not replace the existing Render services or HiglowBiz API.
+
+
+## Nenva Call
+
+The repository now includes a standalone Nenva Call communications web app at `/nenva-call.html`, backed by persistent one-to-one messaging and WebRTC signalling endpoints in the HiglowCloud API. See [docs/NENVA_CALL.md](docs/NENVA_CALL.md) for configuration, testing steps and the remaining production requirements. The current integration reuses HiglowCloud accounts; it is not yet a fully independent verified-phone consumer identity system.
