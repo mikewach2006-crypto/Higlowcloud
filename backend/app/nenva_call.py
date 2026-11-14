@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
+import secrets
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -27,6 +29,12 @@ class CallContact(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     contact_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+class CallSocketTicket(Base):
+    __tablename__ = "nenva_call_socket_tickets"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 class CallMessage(Base):
     __tablename__ = "nenva_call_messages"
@@ -101,6 +109,14 @@ def is_contact(db: Session, a: int, b: int) -> bool:
 def user_card(user, online: bool = False):
     return {"id": user.id, "name": user.name or user.email.split("@")[0],
             "email": user.email, "online": online}
+
+@router.post("/socket-ticket")
+def create_socket_ticket(user=Depends(require_user), db: Session = Depends(get_db)):
+    raw = secrets.token_urlsafe(32)
+    digest = hashlib.sha256(raw.encode()).hexdigest()
+    db.add(CallSocketTicket(id=digest, user_id=user.id, expires_at=utcnow().replace(microsecond=0) + __import__("datetime").timedelta(minutes=2)))
+    db.commit()
+    return {"ticket": raw, "expires_in": 120}
 
 @router.get("/config")
 def call_config(user=Depends(require_user)):
@@ -204,13 +220,19 @@ async def send_message(x: MessageIn, user=Depends(require_user), db: Session = D
     return payload["message"]
 
 @router.websocket("/ws")
-async def call_socket(socket: WebSocket, token: str = ""):
-    from .main import token_data, User
+async def call_socket(socket: WebSocket, ticket: str = ""):
+    from .main import User
     db = SessionLocal()
     user = None
     try:
-        claims = token_data(token)
-        user = db.get(User, int(claims["sub"]))
+        digest = hashlib.sha256(ticket.encode()).hexdigest() if ticket else ""
+        saved = db.get(CallSocketTicket, digest)
+        if not saved or saved.expires_at.replace(tzinfo=UTC) < utcnow():
+            await socket.close(code=4401)
+            return
+        user = db.get(User, saved.user_id)
+        db.delete(saved)
+        db.commit()
         if not user or not user.active:
             await socket.close(code=4401)
             return
