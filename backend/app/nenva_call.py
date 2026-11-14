@@ -45,6 +45,7 @@ class CallUser(Base):
     email_verification_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     phone_verification_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     verification_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    verification_sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
@@ -253,7 +254,7 @@ def register(x: RegisterIn, db: Session = Depends(get_db)):
                     terms_version="1.0", privacy_version="1.0", accepted_at=now(),
                     email_verification_hash=_code_hash(email_code), phone_verification_hash=_code_hash(phone_code),
                     email_verification_expires_at=now() + timedelta(minutes=10),
-                    phone_verification_expires_at=now() + timedelta(minutes=10))
+                    phone_verification_expires_at=now() + timedelta(minutes=10), verification_sent_at=now())
     db.add(user)
     db.flush()
     try:
@@ -264,6 +265,36 @@ def register(x: RegisterIn, db: Session = Depends(get_db)):
         raise
     db.commit()
     return {"ok": True, "verification_required": ["email", "phone"], "message": "Verification codes sent to your email and phone."}
+
+
+class ResendIn(BaseModel):
+    email: str
+
+
+@router.post("/auth/resend")
+def resend_verification(x: ResendIn, db: Session = Depends(get_db)):
+    user = db.scalar(select(CallUser).where(CallUser.email == x.email.strip().lower()))
+    if not user or (user.email_verified and user.phone_verified):
+        raise HTTPException(404, "Verification request not found.")
+    sent_at = user.verification_sent_at
+    if sent_at.tzinfo is None: sent_at = sent_at.replace(tzinfo=UTC)
+    if sent_at > now() - timedelta(seconds=60):
+        raise HTTPException(429, "Wait at least 60 seconds before requesting new verification codes.")
+    email_code = f"{secrets.randbelow(1000000):06d}"
+    phone_code = f"{secrets.randbelow(1000000):06d}"
+    if not user.email_verified: _send_email(user.email, email_code)
+    if not user.phone_verified: _send_sms(user.phone, phone_code)
+    if not user.email_verified:
+        user.email_verification_hash = _code_hash(email_code)
+        user.email_verification_expires_at = now() + timedelta(minutes=10)
+    if not user.phone_verified:
+        user.phone_verification_hash = _code_hash(phone_code)
+        user.phone_verification_expires_at = now() + timedelta(minutes=10)
+    user.verification_attempts = 0
+    user.verification_sent_at = now()
+    db.commit()
+    return {"ok": True, "message": "New verification codes sent."}
+
 
 
 @router.post("/auth/verify")
