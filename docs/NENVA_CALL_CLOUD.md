@@ -6,7 +6,8 @@ Nenva Call is a separate application service inside HiglowCloud. It does not run
 
 - `GET /health` and `GET /config`
 - `POST /auth/register` — create an account, send email and SMS verification codes, and record acceptance of the Terms and Privacy Policy.
-- `POST /auth/verify` — verify email or phone using the six-digit code.
+- `POST /auth/verify` — verify email or phone using its separate six-digit code.
+- `POST /auth/resend` — resend unverified-channel codes, limited to one request per minute.
 - `POST /auth/login` and `GET /auth/me`
 - `GET/POST /contacts` — list existing conversations and start a direct conversation by verified email or phone.
 - `GET/POST /conversations/{id}/messages` — persistent text messaging with cursor-based polling.
