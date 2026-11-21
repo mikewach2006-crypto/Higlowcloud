@@ -29,19 +29,24 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: source/frontend/package-lock.json
       - name: Install frontend dependencies
         working-directory: source/frontend
-        run: npm ci
-      - name: Build Windows EXE
+        run: npm install
+      - name: Build Windows installer
         working-directory: source/frontend
         run: npm run desktop:win
+      - name: Name Windows installer for stable downloads
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
+          $installer = Get-ChildItem source/frontend/release -Filter *.exe | Select-Object -First 1
+          if (-not $installer) { throw "Windows installer was not created" }
+          Copy-Item $installer.FullName release-assets/Higlowbiz-Setup.exe
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
           name: higlowbiz-windows
-          path: source/frontend/release/*.exe
+          path: release-assets/Higlowbiz-Setup.exe
           if-no-files-found: error
           retention-days: 7
 
@@ -61,8 +66,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: source/frontend/package-lock.json
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -70,7 +73,7 @@ jobs:
       - uses: android-actions/setup-android@v3
       - name: Install frontend dependencies
         working-directory: source/frontend
-        run: npm ci
+        run: npm install
       - name: Create Android project if it is not committed
         working-directory: source/frontend
         shell: bash
@@ -78,7 +81,7 @@ jobs:
           if [ ! -d android ]; then
             npx cap add android
           fi
-      - name: Build Android debug APK
+      - name: Build Android testing APK
         working-directory: source/frontend
         shell: bash
         run: |
@@ -86,11 +89,16 @@ jobs:
           cd android
           chmod +x gradlew
           ./gradlew assembleDebug
+      - name: Name Android APK for stable downloads
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          cp source/frontend/android/app/build/outputs/apk/debug/app-debug.apk release-assets/Higlowbiz.apk
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
           name: higlowbiz-android
-          path: source/frontend/android/app/build/outputs/apk/debug/app-debug.apk
+          path: release-assets/Higlowbiz.apk
           if-no-files-found: error
           retention-days: 7
 
@@ -109,7 +117,7 @@ jobs:
         with:
           name: higlowbiz-android
           path: release-assets
-      - name: Publish GitHub release
+      - name: Publish public Higlowbiz release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.${{ github.run_number }}
