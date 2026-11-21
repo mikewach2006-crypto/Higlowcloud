@@ -78,6 +78,9 @@ jobs:
       - name: Install frontend dependencies
         working-directory: source/frontend
         run: npm install
+      - name: Build Higlowbiz web assets for Capacitor
+        working-directory: source/frontend
+        run: npm run build
       - name: Create Android project if it is not committed
         working-directory: source/frontend
         shell: bash
